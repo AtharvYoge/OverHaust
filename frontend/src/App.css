@@ -1,0 +1,7 @@
+/* Global app styles (kept minimal; most styling lives in Tailwind + index.css tokens). */
+
+.App {
+    min-height: 100vh;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+}
