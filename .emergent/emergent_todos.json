@@ -1,26 +1,38 @@
 [
   {
-    "content": "Phase 1: POC — SUCCESS ✓",
+    "content": "Backend: services + endpoints + analytics",
     "status": "completed"
   },
   {
-    "content": "Phase 2: Setup + design guidelines — SUCCESS ✓",
+    "content": "Frontend foundation: testIds, App.js routes, api.js, AppShell nav",
     "status": "completed"
   },
   {
-    "content": "Phase 2: Backend — all endpoints (18/18 tests passed) ✓",
+    "content": "Landing.jsx rewrite + BeforeAfterBars + MemoryLayerVisual",
     "status": "completed"
   },
   {
-    "content": "Phase 2: Frontend — all pages + flows working ✓",
+    "content": "Home dashboard rework",
     "status": "completed"
   },
   {
-    "content": "Phase 2: IndexedDB local cache + LabKOT preload – 27 items active ✓",
+    "content": "New AIMemory.jsx page",
     "status": "completed"
   },
   {
-    "content": "Phase 2: End-to-end testing with testing_agent_v3 — 100% pass ✓",
+    "content": "Usage.jsx (Simple/Advanced, credit savings, plan advisor)",
     "status": "completed"
+  },
+  {
+    "content": "Connections.jsx (agent-agnostic, connect/disconnect)",
+    "status": "completed"
+  },
+  {
+    "content": "ProjectDetail + PipelineOverlay + Settings + Login copy rework",
+    "status": "completed"
+  },
+  {
+    "content": "Verify: screenshots of landing + app, run testing_agent_v3 end-to-end",
+    "status": "in_progress"
   }
 ]

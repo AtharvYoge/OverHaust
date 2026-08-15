@@ -9,8 +9,9 @@ import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Projects from '@/pages/Projects';
 import ProjectDetail from '@/pages/ProjectDetail';
-import Analytics from '@/pages/Analytics';
-import Integrations from '@/pages/Integrations';
+import AIMemory from '@/pages/AIMemory';
+import Usage from '@/pages/Usage';
+import Connections from '@/pages/Connections';
 import Settings from '@/pages/Settings';
 import AppShell from '@/components/AppShell';
 
@@ -20,7 +21,7 @@ const RequireAuth = () => {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-950)] text-[color:var(--ink-400)]">
-        <span className="font-mono text-sm">Initializing Context Runtime…</span>
+        <span className="font-mono text-sm">Loading your AI memory…</span>
       </div>
     );
   }
@@ -43,9 +44,13 @@ function App() {
                 <Route index element={<Dashboard />} />
                 <Route path="projects" element={<Projects />} />
                 <Route path="projects/:id" element={<ProjectDetail />} />
-                <Route path="analytics" element={<Analytics />} />
-                <Route path="integrations" element={<Integrations />} />
+                <Route path="memory" element={<AIMemory />} />
+                <Route path="usage" element={<Usage />} />
+                <Route path="connections" element={<Connections />} />
                 <Route path="settings" element={<Settings />} />
+                {/* Back-compat redirects for old paths */}
+                <Route path="analytics" element={<Navigate to="/app/usage" replace />} />
+                <Route path="integrations" element={<Navigate to="/app/connections" replace />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

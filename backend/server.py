@@ -27,16 +27,20 @@ from context_engine import (
     select_relevant_context,
 )
 from labkot_demo import LABKOT_PROJECT, labkot_sources
+from services import AGENT_CATALOG, compute_plan_advice, is_connectable
 from models import (
     AnalyticsSummary,
     CacheDocument,
     CacheMetrics,
+    Connection,
+    ConnectionCreate,
     ContextCache,
     ContextSource,
     ContextSourceCreate,
     CONTEXT_TYPES,
     LoginRequest,
     LoginResponse,
+    PlanAdvice,
     Project,
     ProjectCreate,
     TaskCreate,
@@ -505,6 +509,7 @@ async def analytics(user: User = Depends(get_current_user)):
 
     avg_reduction = round(sum(reductions) / len(reductions), 2) if reductions else 0.0
     saved = max(0, total_raw - total_cache)
+    connected = await db.connections.count_documents({"user_id": user.id})
     return AnalyticsSummary(
         projects=projects_count,
         total_raw_tokens=total_raw,
@@ -514,6 +519,7 @@ async def analytics(user: User = Depends(get_current_user)):
         total_cache_builds=cache_builds,
         estimated_context_saved=saved,
         knowledge_items=knowledge,
+        connected_agents=connected,
     )
 
 
@@ -533,6 +539,87 @@ async def analytics_history(user: User = Depends(get_current_user)):
             "version": doc.get("version", 1),
         })
     return out
+
+
+# ----- Connections (agent-agnostic open layer) -----
+
+@api.get("/connections/catalog")
+async def connections_catalog():
+    """Static catalog of supported agents with honest statuses."""
+    return AGENT_CATALOG
+
+
+@api.get("/connections", response_model=List[Connection])
+async def list_connections(user: User = Depends(get_current_user)):
+    cursor = db.connections.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1)
+    out: List[Connection] = []
+    async for doc in cursor:
+        out.append(Connection(**_from_mongo(doc)))
+    return out
+
+
+@api.post("/connections", response_model=Connection)
+async def create_connection(req: ConnectionCreate, user: User = Depends(get_current_user)):
+    if not is_connectable(req.agent_key):
+        raise HTTPException(400, "This agent isn't available to connect yet.")
+    existing = await db.connections.find_one(
+        {"user_id": user.id, "agent_key": req.agent_key}, {"_id": 0}
+    )
+    if existing:
+        return Connection(**_from_mongo(existing))
+    conn = Connection(user_id=user.id, agent_key=req.agent_key, agent_name=req.agent_name)
+    await db.connections.insert_one(_to_mongo(conn.model_dump()))
+    return conn
+
+
+@api.delete("/connections/{connection_id}")
+async def delete_connection(connection_id: str, user: User = Depends(get_current_user)):
+    res = await db.connections.delete_one({"id": connection_id, "user_id": user.id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Connection not found")
+    return {"deleted": True}
+
+
+# ----- Usage / Plan advisor (all ESTIMATES) -----
+
+@api.get("/usage/plan-advisor", response_model=PlanAdvice)
+async def usage_plan_advisor(user: User = Depends(get_current_user)):
+    """Simple, non-technical estimate of AI usage savings + upgrade advice.
+
+    Reuses the analytics aggregation and the UsageService boundary. Nothing here
+    reflects real third-party provider billing — everything is an estimate.
+    """
+    tasks_count = await db.tasks.count_documents({"user_id": user.id})
+    projects_count = await db.projects.count_documents({"user_id": user.id})
+
+    total_raw = 0
+    total_cache = 0
+    reductions: List[float] = []
+    project_ids: List[str] = []
+    async for p in db.projects.find({"user_id": user.id}, {"_id": 0, "id": 1}):
+        project_ids.append(p["id"])
+    for pid in project_ids:
+        latest = await db.caches.find_one(
+            {"project_id": pid, "user_id": user.id}, {"_id": 0}, sort=[("version", -1)]
+        )
+        if not latest:
+            continue
+        m = latest.get("metrics") or {}
+        total_raw += (m.get("raw_tokens") or {}).get("total", 0) or 0
+        total_cache += m.get("cache_tokens", 0) or 0
+        r = m.get("reduction_pct") or 0.0
+        if r > 0:
+            reductions.append(float(r))
+    avg_reduction = round(sum(reductions) / len(reductions), 2) if reductions else 0.0
+
+    advice = compute_plan_advice(
+        total_raw_tokens=total_raw,
+        total_cache_tokens=total_cache,
+        avg_reduction_pct=avg_reduction,
+        projects=projects_count,
+        tasks=tasks_count,
+    )
+    return PlanAdvice(**advice)
 
 
 # ----- Helpers -----

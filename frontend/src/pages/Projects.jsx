@@ -70,12 +70,12 @@ export default function Projects() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Projects</div>
-          <h1 className="mt-1 text-2xl sm:text-3xl font-semibold">Workspaces</h1>
-          <p className="mt-1 text-sm text-[color:var(--ink-400)]">Each project has its own Context Cache and task history.</p>
+          <h1 className="mt-1 text-2xl sm:text-3xl font-semibold">My Projects</h1>
+          <p className="mt-1 text-sm text-[color:var(--ink-400)]">Each project keeps its own AI memory and prepared context.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="secondary" onClick={seed} className="bg-[color:var(--surface-800)] border border-[color:var(--border-700)] gap-2">
-            <Sparkles className="w-3.5 h-3.5" /> Load LabKOT demo
+            <Sparkles className="w-3.5 h-3.5" /> Load demo
           </Button>
           <Button data-testid={PROJECT.createButton} onClick={() => setCreate(true)} className="bg-[color:var(--teal-500)] text-[color:var(--bg-950)] hover:bg-[color:var(--teal-400)] gap-2">
             <Plus className="w-3.5 h-3.5" /> New project
@@ -92,7 +92,7 @@ export default function Projects() {
         ) : items.length === 0 ? (
           <div className="p-8 text-center">
             <div className="text-sm text-[color:var(--ink-300)]">No projects yet.</div>
-            <div className="mt-1 text-xs text-[color:var(--ink-600)] font-mono">Try the LabKOT demo to see the full flow instantly.</div>
+            <div className="mt-1 text-xs text-[color:var(--ink-600)] font-mono">Try the demo to see the full flow instantly.</div>
           </div>
         ) : items.map((p) => (
           <div key={p.id} className="grid grid-cols-[1fr_240px_120px_60px] items-center px-4 py-3 border-b border-[color:var(--border-700)] hover:bg-[rgba(233,238,245,0.03)]">
@@ -164,7 +164,7 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }) {
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
           <DialogDescription className="text-[color:var(--ink-400)]">
-            Give the runtime a name, a short description, and the tech stack. You can add context after.
+            Give your project a name, a short description, and any tools it uses. You can add knowledge after.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">

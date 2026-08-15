@@ -10,7 +10,7 @@ export default function CodeBlock({ content, testId, copyTestId, ariaLabel, mono
     try {
       await navigator.clipboard.writeText(content || '');
       setCopied(true);
-      toast.success('Copied optimized context to clipboard');
+      toast.success('Copied — paste it into your AI');
       setTimeout(() => setCopied(false), 1200);
     } catch {
       toast.error('Copy failed');
@@ -36,11 +36,11 @@ export default function CodeBlock({ content, testId, copyTestId, ariaLabel, mono
           type="button"
           data-testid={copyTestId}
           onClick={handleCopy}
-          aria-label="Copy context"
+          aria-label="Copy for AI"
           className="px-2 py-1 text-[11px] rounded-md bg-[color:var(--teal-500)] text-[color:var(--bg-950)] hover:bg-[color:var(--teal-400)] inline-flex items-center gap-1"
         >
           {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-          {copied ? 'Copied' : 'Copy context'}
+          {copied ? 'Copied' : 'Copy for AI'}
         </button>
       </div>
       <pre

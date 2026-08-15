@@ -1,0 +1,62 @@
+{
+  "summary": "Completed comprehensive E2E testing of OverHaust rework (Context Runtime → AI Memory Layer). Backend: 100% pass rate (25/25 tests including 7 NEW endpoints). Frontend: 100% pass rate (all consumer-facing flows functional). NEW features tested: Connections (connect/disconnect with status validation), Usage plan advisor (Simple/Advanced views with estimates), email-only auth, consumer messaging throughout. LLM integration working correctly with real Emergent LLM. Cache build achieved 95.2% reduction on LabKOT demo. All redirects working (/app/analytics → /app/usage, /app/integrations → /app/connections).",
+  "backend_issues": {
+    "critical_bugs": [],
+    "flaky_endpoints": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend: Email-only auth (POST /api/auth/login with email returns token+user)",
+    "Backend: GET /api/connections/catalog returns 11 agents with correct statuses (available, agent_connection, coming_soon)",
+    "Backend: GET /api/connections lists user connections",
+    "Backend: POST /api/connections creates connection for 'available' agents (cursor, claude, chatgpt)",
+    "Backend: POST /api/connections correctly rejects 'coming_soon' agent (gemini) with 400",
+    "Backend: DELETE /api/connections/{id} removes connection",
+    "Backend: GET /api/usage/plan-advisor returns PlanAdvice with all 11 required fields (current_usage_pct: 79%, unnecessary_pct: 75%, optimized_usage_pct: 20%, estimated_reduction_pct: 92%, recommendation, disclaimer with 'estimates')",
+    "Backend: GET /api/analytics includes connected_agents count (value: 1)",
+    "Backend: Core flow still works (seed labkot → cache/build with 94.82% reduction → tasks with 99.15% reduction)",
+    "Backend: All 18 original endpoints still working (auth, projects, contexts, cache, tasks, analytics)",
+    "Frontend: Landing page renders new consumer hero 'Are Your AI Tokens Finishing Too Fast?', pain points, audience grid, agents, pricing",
+    "Frontend: Primary CTA navigates to /login",
+    "Frontend: Login with any email (playwright-test@overhaust.com) navigates to /app (Home)",
+    "Frontend: Home shows 'You're getting more from your AI' hero card + 4 KPI cards (information saved: 377k tokens, usage reduced: 65%, projects: 0, connected agents: 0)",
+    "Frontend: All 6 nav links route correctly (Home, My Projects, AI Memory, Usage, Connections, Settings)",
+    "Frontend: Usage page Simple view shows savings % (65%), credit-savings card, plan advisor recommendation ('You have comfortable headroom on your current plan')",
+    "Frontend: Usage page Advanced view shows original tokens (580k), optimized tokens (203k), reduction chart",
+    "Frontend: Usage page Simple/Advanced toggle works correctly",
+    "Frontend: Connections page shows agent grid with 11 agents (Cursor, Claude, ChatGPT, Claude Code, Replit, Gemini, Windsurf, OpenHands, OpenClaw, Hermes, Other)",
+    "Frontend: Connections page connect/disconnect flow works (Cursor: Connect → Connected badge → Disconnect)",
+    "Frontend: Connections page correctly shows status badges (Available: green, Agent Connection: blue, Coming Soon: amber)",
+    "Frontend: Project flow - Load demo button seeds LabKOT project and navigates to project detail",
+    "Frontend: Project detail - 'Build AI memory' button shows friendly processing overlay and builds cache (95.2% reduction)",
+    "Frontend: Project detail - 'Prepare for AI' input accepts task description",
+    "Frontend: Project detail - Task generation shows 'Relevant information' and 'Not needed right now' sections",
+    "Frontend: Project detail - 'Copy for AI' block shows optimized context (303 tokens estimated)",
+    "Frontend: AI Memory page loads and shows categories after memory is built",
+    "Frontend: Old routes redirect correctly (/app/analytics → /app/usage, /app/integrations → /app/connections)"
+  ],
+  "test_report_links": [
+    "/app/backend/backend_test.py",
+    "/.screenshots/01_landing_page.png",
+    "/.screenshots/02_home_dashboard.png",
+    "/.screenshots/03_usage_page.png",
+    "/.screenshots/04_connections_page.png",
+    "/.screenshots/05_project_after_build.png",
+    "/.screenshots/06_prepare_for_ai.png",
+    "/.screenshots/07_ai_memory_page.png"
+  ],
+  "action_item_for_main_agent": "",
+  "updated_files": [
+    "/app/backend/backend_test.py"
+  ],
+  "success_percentage": {
+    "backend": "100% (25/25 tests passed - 18 original + 7 NEW endpoints)",
+    "frontend": "100% (all 9 critical flows functional - landing, login, home, nav, usage, connections, project flow, task generation, AI memory)"
+  },
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_test_itself": false
+}

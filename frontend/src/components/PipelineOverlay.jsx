@@ -3,25 +3,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Check, Loader2 } from 'lucide-react';
 
 const STEPS = [
-  { id: 'read', label: 'Reading project context' },
-  { id: 'tech', label: 'Detecting technologies' },
-  { id: 'arch', label: 'Extracting architecture' },
-  { id: 'components', label: 'Finding important components' },
-  { id: 'dedupe', label: 'Detecting repeated information' },
-  { id: 'stale', label: 'Identifying stale conversation' },
-  { id: 'memory', label: 'Building project memory' },
-  { id: 'cache', label: 'Generating compressed context cache' },
+  { id: 'read', label: 'Reading your information' },
+  { id: 'important', label: 'Finding the important parts' },
+  { id: 'dedupe', label: 'Removing repetition' },
+  { id: 'organize', label: 'Organizing what matters' },
+  { id: 'save', label: 'Saving your AI memory' },
+  { id: 'ready', label: 'Ready' },
 ];
 
 const LOG_LINES = [
-  'engine: normalizing inputs…',
-  'tokenizer: applying char/4 heuristic',
-  'dedupe: fingerprinting repeated architecture notes',
-  'architecture: inferring frontend / backend / database',
-  'components: scoring by mention density',
-  'memory: partitioning conversation into 5 buckets',
-  'compressor: writing Context Cache v1',
-  'ready: awaiting task-specific relevance query',
+  'Reading your chats, files and notes…',
+  'Picking out the useful details…',
+  'Skipping information that keeps repeating…',
+  'Grouping everything so it makes sense…',
+  'Storing your AI memory…',
+  'All set — your AI memory is ready.',
 ];
 
 export default function PipelineOverlay({ open, done, onClose }) {
@@ -93,11 +89,11 @@ export default function PipelineOverlay({ open, done, onClose }) {
           >
             <div className="px-6 pt-5 pb-4 border-b border-[color:var(--border-700)] flex items-center justify-between">
               <div>
-                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Context Runtime</div>
-                <div className="text-lg font-semibold">Building Context Cache</div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">OverHaust</div>
+                <div className="text-lg font-semibold">Updating your AI memory</div>
               </div>
               <div className="text-[11px] font-mono text-[color:var(--ink-400)]">
-                {done ? 'llm: complete' : 'llm: analyzing…'}
+                {done ? 'ready' : 'working…'}
               </div>
             </div>
 
@@ -124,19 +120,19 @@ export default function PipelineOverlay({ open, done, onClose }) {
               </ol>
 
               <div className="p-4 md:p-5 flex flex-col">
-                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)] mb-2">Trace</div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)] mb-2">Progress</div>
                 <div
                   ref={logRef}
                   className="h-56 md:h-72 overflow-y-auto rounded-md bg-black/40 border border-[color:var(--border-700)] p-3 font-mono text-[12px] leading-6 text-[color:var(--ink-200)]"
                 >
                   {logs.map((l, i) => (
-                    <div key={i}>
-                      <span className="text-[color:var(--ink-600)]">$ </span>
+                    <div key={i} className="flex items-start gap-2">
+                      <span className="text-[color:var(--mint-400)] mt-0.5">✓</span>
                       <span>{l}</span>
                     </div>
                   ))}
                   {done && step >= STEPS.length && (
-                    <div className="mt-2 text-[color:var(--mint-400)]">$ done — Context Cache written.</div>
+                    <div className="mt-2 text-[color:var(--mint-400)]">Your AI memory is ready.</div>
                   )}
                 </div>
 
@@ -149,7 +145,7 @@ export default function PipelineOverlay({ open, done, onClose }) {
                   </div>
                   <div className="mt-2 flex items-center justify-between text-[11px] font-mono text-[color:var(--ink-400)]">
                     <span>step {Math.min(step + 1, STEPS.length)} / {STEPS.length}</span>
-                    <span>{done ? 'complete' : 'analyzing'}</span>
+                    <span>{done ? 'ready' : 'working'}</span>
                   </div>
                 </div>
               </div>

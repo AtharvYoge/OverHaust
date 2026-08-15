@@ -71,3 +71,15 @@ export const AnalyticsAPI = {
   summary: () => api.get('/analytics').then((r) => r.data),
   history: () => api.get('/analytics/history').then((r) => r.data),
 };
+
+export const ConnectionAPI = {
+  catalog: () => api.get('/connections/catalog').then((r) => r.data),
+  list: () => api.get('/connections').then((r) => r.data),
+  connect: (agent_key, agent_name) =>
+    api.post('/connections', { agent_key, agent_name }).then((r) => r.data),
+  disconnect: (id) => api.delete(`/connections/${id}`).then((r) => r.data),
+};
+
+export const UsageAPI = {
+  planAdvisor: () => api.get('/usage/plan-advisor').then((r) => r.data),
+};

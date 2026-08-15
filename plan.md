@@ -1,135 +1,113 @@
-# OverHaust — Development Plan (MVP)
+# OverHaust — AI Memory Layer (Universal) — Revision Plan (MVP)
 
 ## 1) Objectives
-- Prove the core: **LLM-powered Context Cache generation** + **task-relevant context assembly** from large raw inputs.
-- Ship a dark-first web app with the primary flows: **Project → Add Context → Build Context Cache → View Cache → Generate Task Context**.
-- Persist data: MongoDB (server) + IndexedDB (local cache) with clear “estimated tokens” metrics.
-- Deliver a polished v1 UX (Linear/Vercel/Raycast feel) with basic analytics + integrations preview.
+- Reposition OverHaust as a **universal AI Memory Layer**: simple UX, non-technical language; sophisticated engine stays under the hood.
+- Preserve the working backend LLM core (**analyze_project_context + select_relevant_context**) and current APIs; keep all savings clearly labeled **estimated**.
+- Add new user-facing pillars: **Connections** (agent-agnostic) and **Usage** (Simple/Advanced + plan advisor).
+- Simplify app IA + navigation: **Home, My Projects, AI Memory, Usage, Connections, Settings**.
+- Maintain **local-first** behavior (IndexedDB mirror) and fast “ready” feel.
 
 ---
 
 ## 2) Implementation Steps
 
-### Phase 1 — Core POC (LLM in isolation; must work before app)
-**User stories (POC):**
-1. As a builder, I can submit a large mixed context blob and receive a **valid structured JSON Context Cache**.
-2. As a builder, I can submit a task prompt and get a **relevant subset** of the cache + an “AI-ready context block”.
-3. As a builder, I can see robust validation errors when the LLM output is malformed.
-4. As a builder, I can run the POC repeatedly on LabKOT sample and get stable category coverage.
-5. As a builder, I can estimate tokens deterministically (chars/4) without calling an LLM.
+### Phase 1 — Core Flow POC (UX + copy, engine untouched)
+**User stories**
+1. As a non-technical user, I can understand OverHaust in <10s on the landing page.
+2. As a user, I can add information and see a simple “reading → organizing → ready” progress experience.
+3. As a user, I can ask “what am I working on?” and get a prepared block to copy into my AI tool.
+4. As a user, I can view savings in a Simple view without needing to understand tokens.
+5. As a power user, I can switch to Advanced view and see token numbers labeled as estimates.
 
-**Steps:**
-- Add `EMERGENT_LLM_KEY` to backend `.env`; choose model for POC (OpenAI `gpt-4.1-mini` or Anthropic `claude-haiku-4-5-20251001`).
-- Define strict Pydantic schemas for:
-  - `ContextCache` (Identity, Architecture, Components, Decisions, Current State, Conversation Memory buckets)
-  - `TaskContextResult` (relevant_items, ignored_items, assembled_context_block)
-- Write a standalone Python script (`backend/poc_context_runtime.py`) that:
-  - Loads LabKOT sample context
-  - Calls `emergentintegrations.llm.chat.LlmChat.stream_message()`
-  - Forces JSON-only output (prompt contract) and validates with Pydantic
-  - Runs task selection against the produced cache
-- Fix until it works: iterate prompt + schema until success rate is high on repeated runs.
-- Minimal “best practices” websearch target: structured JSON prompting + schema validation patterns for streamed LLM outputs.
-
-**Exit criteria (Phase 1):**
-- POC consistently returns valid JSON for both cache generation and task-context selection.
+**POC tasks (must be stable before broad UI rewrite finishes)**
+- Rewrite **Landing hero + sections** to consumer messaging (no MCP/context window/etc. above the fold).
+- Implement a minimal **Prepare for AI** panel (input → call existing `/tasks` → show Relevant / Not needed + Copy).
+- Implement a minimal **AI Memory view** (read latest cache → display “Things your AI knows” categories).
+- Verify LabKOT demo end-to-end: **seed → add info (optional) → build memory → prepare for AI**.
 
 ---
 
-### Phase 2 — V1 App Development (no auth yet)
-**User stories (V1 core app):**
-1. As a user, I can create a project with name/description/stack and immediately start adding context.
-2. As a user, I can paste/upload context across tabs (Conversation/Docs/Files/Notes) and see it stored.
-3. As a user, I can click “Build Context Cache” and watch an animated analysis pipeline to completion.
-4. As a user, I can browse the Context Cache by category and quickly understand the project.
-5. As a user, I can enter a task, generate optimized context, and copy it with one click.
+### Phase 2 — V1 App Development (new IA + simplified product surface)
+**User stories**
+1. As a user, I can navigate clearly using Home / Projects / AI Memory / Usage / Connections / Settings.
+2. As a user, I can create a project and add knowledge using simple options (paste, files, notes).
+3. As a user, I can see a friendly processing overlay while my AI Memory is being updated.
+4. As a user, I can prepare a task for my AI and copy the result in one click.
+5. As a user, I can understand estimated savings and why I might not need to buy more credits.
 
-**Backend (FastAPI + Mongo):**
-- Replace template endpoints with:
-  - Projects CRUD
-  - Context ingestion (text + uploaded files metadata)
-  - Build cache (async job-like endpoint; initial MVP can be synchronous with progress mocked)
-  - Task context generation (uses stored cache)
-- Implement “Hybrid” rules:
-  - Real LLM for: `analyze_context()` + `select_relevant_context()`
-  - Deterministic `TokenEstimator` for all displayed token counts
-- Store:
-  - Raw context sources (by type)
-  - Generated cache JSON + timestamps + version
-  - Task runs (prompt + output + metrics)
+**Frontend (React) changes**
+- Landing page rebuild:
+  - Hero: “Are Your AI Tokens Finishing Too Fast?” + CTAs “Try It Free” / “See How It Works”.
+  - Add “Sound Familiar?” pain cards.
+  - Add simple animation section (“Everything you give your AI → Our AI Layer → Only useful info”).
+  - Add “Built for Anyone Who Uses AI” audience grid.
+  - Add “Connect to tools you already use” integrations preview with accurate statuses.
+  - Add Pricing section (Free/Pro/Team) as static.
+- AppShell rename + nav update:
+  - Replace “Overview/Analytics/Integrations” framing with **Home, My Projects, AI Memory, Usage, Connections, Settings**.
+- Home dashboard:
+  - Add “You’re getting more from your AI” hero card with before/after bars + “estimated unnecessary usage reduced”.
+  - KPI cards: Information saved, Usage reduced, Projects, Connected agents (all estimated where needed).
+- Project detail simplification:
+  - Rename “Context Cache” → **AI Memory**; rename “Task Context Generator” → **Prepare for AI**.
+  - “Give Your AI More Knowledge” intake with big options (paste/upload/notes/import conversation placeholders).
+  - Processing overlay copy updated to non-technical steps.
+  - Relevance output labels: **Relevant information** vs **Not needed right now**.
+  - Keep token details behind **Simple/Advanced** toggle.
+- Add new pages:
+  - **AI Memory**: per-project memory categories + “Recently updated”.
+  - **Usage**: Simple/Advanced toggle; Credit-savings narrative; “Before you buy more credits…” section.
+  - **Connections**: agent cards (Available/Coming Soon/Compatible through Agent Connection) with no false claims.
 
-**Frontend (React + TypeScript + Tailwind + Radix):**
-- Convert to TypeScript; set up typed API client.
-- Routing:
-  - `/` Landing (marketing)
-  - `/app/*` App shell
-- App shell UI:
-  - Sidebar: Overview, Projects, Context Cache, Tasks, Analytics, Integrations, Settings
-  - Dark-first theme defaults
-- Screens (MVP):
-  - Projects list + create
-  - Project detail with Context tabs + upload
-  - “Build Context Cache” pipeline animation view
-  - Context Cache viewer (7 categories)
-  - Task Context generator (relevant vs ignored + context block + copy)
-  - Compression viz (before/after + reduction % + “estimated”)
-  - Local knowledge status card (IndexedDB sync state)
+**Backend (FastAPI) additions (keep engine untouched)**
+- Add a small **usage service boundary** (new module) that computes estimates from existing cache/task metrics:
+  - endpoints (MVP): `GET /api/usage/summary`, `POST /api/usage/plan-advice` (pure estimate + disclaimers).
+- Add a small **connections service boundary** (new module) with persisted connection records:
+  - endpoints (MVP): `GET/POST/DELETE /api/connections` storing {agent_name, status, notes}.
+- Keep existing project/context/cache/task endpoints unchanged; reuse seeded LabKOT.
 
-**Local persistence (IndexedDB):**
-- Cache last Context Cache + last task contexts per project.
-- Show “Active / last updated / cache size / knowledge items / refresh” card.
+**Local-first**
+- Extend IndexedDB usage to also store:
+  - last usage summary per user (optional)
+  - last prepared “copy block” per project
 
-**Conclude Phase 2:**
-- Run `testing_agent_v3` for one end-to-end pass: create project → ingest context → build cache → generate task context.
-
----
-
-### Phase 3 — Add requested features + polish
-**User stories (expansion):**
-1. As a user, I can see analytics for context size reduction over time per project.
-2. As a user, I can compare runs (tokens/items/files) in a clear table.
-3. As a user, I can trigger incremental updates and see what changed.
-4. As a user, I can explore Integrations/MCP preview and understand how it will connect.
-5. As a user, I can preload the LabKOT demo project and click through the full flow.
-
-**Additions:**
-- Analytics page: charts for before/after, tasks, cache updates, “most-used knowledge”.
-- Comparison table view across cache builds / task runs.
-- Incremental update MVP: diff context sources by hash → if changed, rebuild cache; show “changed inputs” list.
-- Integrations/MCP page: Coming Soon cards + mock command + mock tool list.
-- Preloaded LabKOT dataset seed endpoint + one-click import.
-
-**Conclude Phase 3:**
-- Run `testing_agent_v3` again on both blank project + LabKOT demo.
+**Conclude Phase 2**
+- Run automated end-to-end test pass (existing suite + update selectors/testIds where labels changed).
 
 ---
 
-### Phase 4 — Simple email-only demo auth (last)
-**User stories (auth):**
-1. As a user, I can log in with email and keep my projects separated from others.
-2. As a user, I can log out and see the app return to demo login.
-3. As a user, I can keep using the app without password resets or complex flows.
-4. As a user, I can revisit later and see my projects restored.
-5. As a user, I can still use local IndexedDB cache to load faster after login.
+### Phase 3 — Feature Expansion + Polish (agent-ready architecture, still simple UX)
+**User stories**
+1. As a user, I can see “Knowledge ready in Xms” measured locally (real timings, no inflated claims).
+2. As a user, I can view Usage savings by project and month (estimated).
+3. As a user, I can see what changed since last AI Memory update (“new info detected”).
+4. As a user, I can manage connections (add/remove) without setup complexity.
+5. As a technical user, I can find “For developers / How it works” deeper section without it dominating.
 
-**Steps:**
-- Add minimal login (email-only) + JWT; scope Mongo queries by `user_id`.
-- Migrate existing demo data path to a “demo user”.
-- Final test pass with `testing_agent_v3`.
+**Work**
+- Implement measured latency metrics on key actions (local timing + API timing).
+- Add Usage history charts sourced from existing cache builds + tasks (no provider billing claims).
+- Strengthen service boundaries in code structure (knowledge ingestion, memory, relevance, context prep, usage, connections) without overbuilding.
+- Copy + micro-UX polish: consistent disclaimers, empty states, and Simple/Advanced toggles.
+
+**Conclude Phase 3**
+- Run full regression tests + manual demo run using LabKOT.
 
 ---
 
 ## 3) Next Actions
-1. Implement Phase 1 POC script + schemas and run it on LabKOT sample until stable.
-2. Lock prompts (analysis + selection) and store them in versioned files.
-3. Convert frontend to TypeScript + create app shell routes (`/` and `/app/*`).
-4. Build minimal backend endpoints for projects/context/cache/task.
+1. Rewrite Landing page content + sections per new positioning (keep dark teal aesthetic).
+2. Update AppShell navigation + routes to new IA; keep old pages temporarily mapped until replaced.
+3. Implement “Prepare for AI” simplified panel using existing `/tasks` endpoint + new labels.
+4. Add **Usage** + **Connections** pages (UI) and minimal backend endpoints for estimates + stored connections.
+5. Update testIds/e2e flows and run full test suite.
 
 ---
 
 ## 4) Success Criteria
-- POC: Validated `ContextCache` JSON + `TaskContextResult` produced reliably from large inputs.
-- App: User can complete the full core flow in <5 minutes with no dead ends.
-- Metrics: Token estimates shown everywhere with clear “estimated” labeling; reduction % matches demo narrative.
-- Persistence: Mongo stores canonical data; IndexedDB improves perceived performance and shows accurate status.
-- Testing: `testing_agent_v3` passes end-to-end on at least 2 scenarios (fresh project + LabKOT demo).
+- A first-time visitor understands the product in **10 seconds** without technical jargon.
+- Core demo works end-to-end: **seed LabKOT → build AI Memory → prepare for AI → copy block**.
+- Dashboard and Usage clearly emphasize **credit/usage savings** with **estimated** labeling.
+- Connections page is agent-agnostic and does not claim unbuilt integrations.
+- Local-first mirror works: cache/task outputs load quickly; no regressions in existing workflows.
+- Automated tests pass with updated labels/routes; no broken navigation or dead ends.

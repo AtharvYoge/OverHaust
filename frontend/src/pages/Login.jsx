@@ -46,9 +46,9 @@ export default function Login() {
         <div className="absolute inset-0 bg-grid bg-grid-fade opacity-30" />
         <div className="absolute inset-0 bg-[radial-gradient(600px_circle_at_50%_20%,rgba(32,178,170,0.16),transparent_60%)]" />
         <form onSubmit={submit} className="relative w-full max-w-[420px] rounded-[16px] border border-[color:var(--border-700)] bg-[color:var(--surface-850)] p-6 shadow-[var(--shadow-popover)]">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Context Runtime</div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">AI Memory Layer</div>
           <h1 className="mt-1 text-2xl font-semibold">Continue with email</h1>
-          <p className="mt-1 text-sm text-[color:var(--ink-400)]">No password. This is a prototype workspace.</p>
+          <p className="mt-1 text-sm text-[color:var(--ink-400)]">No password needed. Start free in seconds.</p>
 
           <div className="mt-6 space-y-2">
             <label htmlFor="email" className="text-xs text-[color:var(--ink-400)]">Email</label>
@@ -74,8 +74,8 @@ export default function Login() {
             data-testid={LOGIN.disclaimer}
             className="mt-4 text-[11px] font-mono text-[color:var(--ink-600)] leading-relaxed"
           >
-            OverHaust is a prototype. Data you enter is stored in this workspace and locally in your browser.
-            Nothing is shared with third parties beyond LLM calls needed for analysis.
+            OverHaust remembers the important information so your AI uses fewer tokens. Your knowledge stays in this
+            workspace and locally in your browser. Savings shown are estimates.
           </div>
         </form>
       </div>

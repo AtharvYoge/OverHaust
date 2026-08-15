@@ -1,18 +1,17 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard,
+  Home,
   FolderKanban,
-  Layers,
-  ListTodo,
-  LineChart,
+  Brain,
+  Gauge,
   Plug,
   Settings as SettingsIcon,
-  Command,
   LogOut,
   Plus,
-  Database,
   Sparkles,
+  Layers,
+  PlusCircle,
 } from 'lucide-react';
 import { NAV } from '@/constants/testIds';
 import { useAuth } from '@/lib/auth';
@@ -23,12 +22,22 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import LocalCacheStatus from '@/components/LocalCacheStatus';
 
 const navItems = [
-  { to: '/app', end: true, icon: LayoutDashboard, label: 'Overview', tid: NAV.overview },
-  { to: '/app/projects', icon: FolderKanban, label: 'Projects', tid: NAV.projects },
-  { to: '/app/analytics', icon: LineChart, label: 'Analytics', tid: NAV.analytics },
-  { to: '/app/integrations', icon: Plug, label: 'Integrations', tid: NAV.integrations },
+  { to: '/app', end: true, icon: Home, label: 'Home', tid: NAV.home },
+  { to: '/app/projects', icon: FolderKanban, label: 'My Projects', tid: NAV.projects },
+  { to: '/app/memory', icon: Brain, label: 'AI Memory', tid: NAV.memory },
+  { to: '/app/usage', icon: Gauge, label: 'Usage', tid: NAV.usage },
+  { to: '/app/connections', icon: Plug, label: 'Connections', tid: NAV.connections },
   { to: '/app/settings', icon: SettingsIcon, label: 'Settings', tid: NAV.settings },
 ];
+
+const PAGE_TITLES = {
+  '/app': 'Home',
+  '/app/projects': 'My Projects',
+  '/app/memory': 'AI Memory',
+  '/app/usage': 'Usage',
+  '/app/connections': 'Connections',
+  '/app/settings': 'Settings',
+};
 
 export default function AppShell() {
   const { user, logout } = useAuth();
@@ -38,10 +47,10 @@ export default function AppShell() {
   const handleSeed = async () => {
     try {
       const proj = await ProjectAPI.seedLabkot();
-      toast.success('LabKOT demo loaded', { description: 'Preloaded project + realistic conversation.' });
+      toast.success('Demo project loaded', { description: 'A realistic project with a long AI conversation.' });
       navigate(`/app/projects/${proj.id}`);
     } catch (e) {
-      toast.error('Failed to load demo', { description: String(e?.message || e) });
+      toast.error('Could not load the demo', { description: String(e?.message || e) });
     }
   };
 
@@ -50,15 +59,15 @@ export default function AppShell() {
       <div className="min-h-screen bg-[color:var(--bg-950)] text-[color:var(--ink-50)] flex">
         {/* Sidebar */}
         <aside className="hidden md:flex md:flex-col w-[260px] border-r border-[color:var(--border-700)] bg-[color:var(--bg-900)] sticky top-0 h-screen">
-          <div className="h-14 flex items-center gap-2 px-5 border-b border-[color:var(--border-700)]">
+          <NavLink to="/app" className="h-14 flex items-center gap-2 px-5 border-b border-[color:var(--border-700)]">
             <div className="w-7 h-7 rounded-md bg-gradient-to-br from-[color:var(--teal-400)] to-[color:var(--teal-500)] flex items-center justify-center shadow-[0_0_0_1px_rgba(53,199,191,0.35),0_6px_20px_rgba(32,178,170,0.35)]">
               <Layers className="w-4 h-4 text-[color:var(--bg-950)]" strokeWidth={2.5} />
             </div>
             <div className="flex flex-col leading-tight">
               <span className="text-sm font-semibold tracking-tight">OverHaust</span>
-              <span className="text-[10px] uppercase tracking-[0.16em] text-[color:var(--ink-600)]">Context Runtime</span>
+              <span className="text-[10px] uppercase tracking-[0.16em] text-[color:var(--ink-600)]">AI Memory Layer</span>
             </div>
-          </div>
+          </NavLink>
 
           <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-0.5">
             <div className="px-2 pb-2 text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Workspace</div>
@@ -90,7 +99,7 @@ export default function AppShell() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-xs truncate text-[color:var(--ink-50)]">{user?.email}</div>
-                <div className="text-[10px] text-[color:var(--ink-600)]">Demo workspace</div>
+                <div className="text-[10px] text-[color:var(--ink-600)]">Free workspace</div>
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -112,9 +121,8 @@ export default function AppShell() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Topbar */}
           <header className="h-14 sticky top-0 z-20 flex items-center gap-3 px-4 sm:px-6 border-b border-[color:var(--border-700)] bg-[color:var(--bg-950)]/85 backdrop-blur supports-[backdrop-filter]:bg-[color:var(--bg-950)]/70">
-            <div className="flex items-center gap-2 text-[color:var(--ink-400)] text-sm min-w-0">
-              <Command className="w-4 h-4" />
-              <span className="font-mono truncate">{humanPath(location.pathname)}</span>
+            <div className="flex items-center gap-2 text-[color:var(--ink-200)] text-sm min-w-0">
+              <span className="font-semibold truncate">{PAGE_TITLES[location.pathname] || 'Project'}</span>
             </div>
             <div className="flex-1" />
             <Button
@@ -124,7 +132,16 @@ export default function AppShell() {
               data-testid={NAV.seedDemo}
               className="bg-[color:var(--surface-800)] border border-[color:var(--border-700)] hover:border-[color:var(--border-650)] gap-2"
             >
-              <Sparkles className="w-3.5 h-3.5" /> Load LabKOT demo
+              <Sparkles className="w-3.5 h-3.5" /> Load demo
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate('/app/projects?new=1')}
+              data-testid={NAV.addKnowledge}
+              className="hidden sm:inline-flex bg-[color:var(--surface-800)] border border-[color:var(--border-700)] hover:border-[color:var(--border-650)] gap-2"
+            >
+              <PlusCircle className="w-3.5 h-3.5" /> Add knowledge
             </Button>
             <Button
               size="sm"
@@ -143,10 +160,4 @@ export default function AppShell() {
       </div>
     </TooltipProvider>
   );
-}
-
-function humanPath(p) {
-  const parts = p.split('/').filter(Boolean);
-  if (parts.length === 0) return '/';
-  return parts.join(' / ');
 }

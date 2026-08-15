@@ -193,3 +193,47 @@ class AnalyticsSummary(BaseModel):
     total_cache_builds: int = 0
     estimated_context_saved: int = 0
     knowledge_items: int = 0
+    connected_agents: int = 0
+
+
+# ---------- Connections (agent-agnostic) ----------
+# The product is designed around an open connection layer so any AI agent can be
+# supported over time (MCP, APIs, extensions, local/desktop/browser agents).
+
+CONNECTION_STATUSES = {"available", "coming_soon", "agent_connection"}
+
+
+class ConnectionCreate(BaseModel):
+    agent_key: str = Field(min_length=1, max_length=60)
+    agent_name: str = Field(min_length=1, max_length=80)
+
+
+class Connection(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=_uid)
+    user_id: str
+    agent_key: str
+    agent_name: str
+    status: str = "connected"  # connected (prototype link) — not a live data pipe
+    created_at: datetime = Field(default_factory=_now)
+
+
+# ---------- Usage / Plan advisor (all values are ESTIMATES) ----------
+
+class PlanAdvice(BaseModel):
+    # Simple, non-technical framing of estimated AI usage savings.
+    plan_name: str = "Current plan"
+    current_usage_pct: int = 0            # estimated % of monthly AI allowance used
+    unnecessary_pct: int = 0              # estimated % of usage that was repeated/unneeded
+    optimized_usage_pct: int = 0          # estimated % after optimization
+    estimated_reduction_pct: int = 0      # headline savings number
+    recommendation: str = ""
+    can_stay_on_plan: bool = True
+    # Advanced (token) view — estimated via chars/4 heuristic
+    original_tokens: int = 0
+    optimized_tokens: int = 0
+    information_saved_tokens: int = 0
+    disclaimer: str = (
+        "All figures are estimates based on your project data (chars/4 heuristic). "
+        "OverHaust does not control or refund credits consumed by third-party AI providers."
+    )

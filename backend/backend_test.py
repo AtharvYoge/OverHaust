@@ -444,7 +444,7 @@ class ContextRuntimeTester:
     # ===== ANALYTICS TESTS =====
 
     def test_analytics_summary(self):
-        """Test GET /api/analytics returns AnalyticsSummary."""
+        """Test GET /api/analytics returns AnalyticsSummary with connected_agents."""
         success, response = self.run_test(
             "Analytics: Get summary",
             "GET",
@@ -455,7 +455,7 @@ class ContextRuntimeTester:
         if not success:
             return False
         
-        # Validate response structure
+        # Validate response structure (including NEW connected_agents field)
         checks = [
             ('projects', 'projects' in response),
             ('total_raw_tokens', 'total_raw_tokens' in response),
@@ -465,6 +465,7 @@ class ContextRuntimeTester:
             ('total_cache_builds', 'total_cache_builds' in response),
             ('estimated_context_saved', 'estimated_context_saved' in response),
             ('knowledge_items', 'knowledge_items' in response),
+            ('connected_agents', 'connected_agents' in response),  # NEW field
         ]
         
         all_passed = True
@@ -473,6 +474,211 @@ class ContextRuntimeTester:
                 self.log(f"  ✓ {check_name}: {response.get(check_name)}")
             else:
                 self.log(f"  ✗ {check_name}", "WARN")
+                all_passed = False
+        
+        return all_passed
+
+    # ===== CONNECTIONS TESTS (NEW) =====
+
+    def test_connections_catalog(self):
+        """Test GET /api/connections/catalog returns agent list with statuses."""
+        success, response = self.run_test(
+            "Connections: Get catalog (no auth required)",
+            "GET",
+            "/connections/catalog",
+            200
+        )
+        
+        if not success:
+            return False
+        
+        # Validate response is a list of agents
+        if not isinstance(response, list):
+            self.log("✗ Response is not a list", "WARN")
+            return False
+        
+        self.log(f"✓ Catalog has {len(response)} agents")
+        
+        # Validate each agent has required fields
+        required_fields = ['key', 'name', 'category', 'status']
+        all_passed = True
+        
+        for agent in response:
+            for field in required_fields:
+                if field not in agent:
+                    self.log(f"✗ Agent missing field: {field}", "WARN")
+                    all_passed = False
+        
+        # Check for specific agents mentioned in requirements
+        agent_keys = [a.get('key') for a in response]
+        expected_agents = ['cursor', 'claude', 'chatgpt', 'gemini', 'claude_code', 'replit']
+        for expected in expected_agents:
+            if expected in agent_keys:
+                self.log(f"  ✓ Found agent: {expected}")
+            else:
+                self.log(f"  ✗ Missing agent: {expected}", "WARN")
+                all_passed = False
+        
+        # Verify gemini has status 'coming_soon'
+        gemini = next((a for a in response if a.get('key') == 'gemini'), None)
+        if gemini:
+            if gemini.get('status') == 'coming_soon':
+                self.log("  ✓ Gemini has status 'coming_soon'")
+            else:
+                self.log(f"  ✗ Gemini status is '{gemini.get('status')}', expected 'coming_soon'", "WARN")
+                all_passed = False
+        
+        return all_passed
+
+    def test_list_connections_empty(self):
+        """Test GET /api/connections returns empty list initially."""
+        success, response = self.run_test(
+            "Connections: List user connections (expect empty initially)",
+            "GET",
+            "/connections",
+            200
+        )
+        
+        if success and isinstance(response, list):
+            self.log(f"✓ User has {len(response)} connection(s)")
+            return True
+        return False
+
+    def test_create_connection_available(self):
+        """Test POST /api/connections creates connection for 'available' agent."""
+        success, response = self.run_test(
+            "Connections: Create connection (cursor - available)",
+            "POST",
+            "/connections",
+            200,
+            data={
+                "agent_key": "cursor",
+                "agent_name": "Cursor"
+            }
+        )
+        
+        if success and 'id' in response:
+            self.connection_id = response['id']
+            self.log(f"✓ Connection created with ID: {self.connection_id}")
+            self.log(f"✓ Agent: {response.get('agent_name')}, Status: {response.get('status')}")
+            return True
+        return False
+
+    def test_create_connection_coming_soon(self):
+        """Test POST /api/connections rejects 'coming_soon' agent with 400."""
+        success, response = self.run_test(
+            "Connections: Create connection (gemini - coming_soon, expect 400)",
+            "POST",
+            "/connections",
+            400,  # Expect rejection
+            data={
+                "agent_key": "gemini",
+                "agent_name": "Gemini"
+            }
+        )
+        
+        if success:
+            self.log("✓ Correctly rejected 'coming_soon' agent with 400")
+            return True
+        return False
+
+    def test_list_connections_after_create(self):
+        """Test GET /api/connections returns created connection."""
+        success, response = self.run_test(
+            "Connections: List user connections (expect 1 after create)",
+            "GET",
+            "/connections",
+            200
+        )
+        
+        if success and isinstance(response, list):
+            count = len(response)
+            self.log(f"✓ User has {count} connection(s)")
+            if count >= 1:
+                conn = response[0]
+                self.log(f"  ✓ Connection: {conn.get('agent_name')} ({conn.get('agent_key')})")
+                return True
+            else:
+                self.log("  ✗ Expected at least 1 connection", "WARN")
+                return False
+        return False
+
+    def test_delete_connection(self):
+        """Test DELETE /api/connections/:id removes connection."""
+        if not hasattr(self, 'connection_id') or not self.connection_id:
+            self.log("⚠ Skipping - no connection_id available", "WARN")
+            return False
+        
+        success, _ = self.run_test(
+            "Connections: Delete connection",
+            "DELETE",
+            f"/connections/{self.connection_id}",
+            200
+        )
+        return success
+
+    # ===== USAGE / PLAN ADVISOR TESTS (NEW) =====
+
+    def test_usage_plan_advisor(self):
+        """Test GET /api/usage/plan-advisor returns PlanAdvice with estimates."""
+        success, response = self.run_test(
+            "Usage: Get plan advisor",
+            "GET",
+            "/usage/plan-advisor",
+            200
+        )
+        
+        if not success:
+            return False
+        
+        # Validate response structure
+        required_fields = [
+            'plan_name',
+            'current_usage_pct',
+            'unnecessary_pct',
+            'optimized_usage_pct',
+            'estimated_reduction_pct',
+            'recommendation',
+            'can_stay_on_plan',
+            'original_tokens',
+            'optimized_tokens',
+            'information_saved_tokens',
+            'disclaimer'
+        ]
+        
+        all_passed = True
+        for field in required_fields:
+            if field in response:
+                value = response[field]
+                self.log(f"  ✓ {field}: {value if not isinstance(value, str) or len(str(value)) < 60 else str(value)[:60] + '...'}")
+            else:
+                self.log(f"  ✗ Missing field: {field}", "WARN")
+                all_passed = False
+        
+        # Validate percentages are in valid range
+        if 'current_usage_pct' in response:
+            pct = response['current_usage_pct']
+            if 0 <= pct <= 100:
+                self.log(f"  ✓ current_usage_pct in valid range: {pct}%")
+            else:
+                self.log(f"  ✗ current_usage_pct out of range: {pct}%", "WARN")
+                all_passed = False
+        
+        if 'estimated_reduction_pct' in response:
+            pct = response['estimated_reduction_pct']
+            if 0 <= pct <= 100:
+                self.log(f"  ✓ estimated_reduction_pct in valid range: {pct}%")
+            else:
+                self.log(f"  ✗ estimated_reduction_pct out of range: {pct}%", "WARN")
+                all_passed = False
+        
+        # Validate disclaimer mentions "estimates"
+        if 'disclaimer' in response:
+            disclaimer = response['disclaimer'].lower()
+            if 'estimate' in disclaimer:
+                self.log("  ✓ Disclaimer mentions 'estimates'")
+            else:
+                self.log("  ✗ Disclaimer should mention 'estimates'", "WARN")
                 all_passed = False
         
         return all_passed
@@ -521,6 +727,13 @@ class ContextRuntimeTester:
         self.test_me_with_token()
         self.test_me_without_token()
         
+        # Connections tests (NEW - test before creating projects to verify catalog works without auth)
+        self.test_connections_catalog()
+        self.test_list_connections_empty()
+        self.test_create_connection_available()
+        self.test_create_connection_coming_soon()
+        self.test_list_connections_after_create()
+        
         # Project tests
         self.test_create_project()
         self.test_list_projects()
@@ -541,10 +754,14 @@ class ContextRuntimeTester:
         # Task tests (using LabKOT)
         self.test_create_task()
         
-        # Analytics tests
+        # Analytics tests (includes connected_agents count)
         self.test_analytics_summary()
         
+        # Usage / Plan advisor tests (NEW)
+        self.test_usage_plan_advisor()
+        
         # Delete tests
+        self.test_delete_connection()
         self.test_delete_context_source()
         self.test_delete_project()
         

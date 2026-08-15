@@ -44,10 +44,10 @@ import CodeBlock from '@/components/CodeBlock';
 import TokenComparisonTable from '@/components/TokenComparisonTable';
 
 const TAB_META = {
-  conversation: { label: 'Conversation', icon: MessageSquare, placeholder: 'Paste your entire chat/session history here…' },
-  documentation: { label: 'Documentation', icon: FileText, placeholder: 'Paste README, ADRs, architecture docs…' },
-  file: { label: 'Project files', icon: Boxes, placeholder: 'Paste a file’s contents here (or drop files below)…' },
-  note: { label: 'Notes', icon: StickyNote, placeholder: 'Freeform notes, constraints, TODOs…' },
+  conversation: { label: 'Conversation', icon: MessageSquare, placeholder: 'Paste a long AI chat or conversation here…' },
+  documentation: { label: 'Documents', icon: FileText, placeholder: 'Paste a document, guide or README…' },
+  file: { label: 'Files', icon: Boxes, placeholder: 'Paste file contents here (or drop files below)…' },
+  note: { label: 'Notes', icon: StickyNote, placeholder: 'Add notes, instructions or preferences…' },
 };
 
 export default function ProjectDetail() {
@@ -70,6 +70,7 @@ export default function ProjectDetail() {
   const [buildDone, setBuildDone] = useState(false);
   const [busyBuild, setBusyBuild] = useState(false);
   const [busyTask, setBusyTask] = useState(false);
+  const [advancedUsage, setAdvancedUsage] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -122,7 +123,7 @@ export default function ProjectDetail() {
     try {
       const created = await ContextAPI.add(id, payload);
       setSources((s) => [created, ...s]);
-      toast.success('Context added', { description: `${payload.type} · ${payload.name}` });
+      toast.success('Added to your project', { description: `${payload.type} · ${payload.name}` });
     } catch (e) {
       toast.error('Add failed', { description: String(e?.message || e) });
     }
@@ -150,7 +151,7 @@ export default function ProjectDetail() {
   };
 
   const buildCache = async () => {
-    if (sources.length === 0) { toast.error('Add at least one context source'); return; }
+    if (sources.length === 0) { toast.error('Add some information first'); return; }
     setBuildOpen(true);
     setBuildDone(false);
     setBusyBuild(true);
@@ -159,8 +160,8 @@ export default function ProjectDetail() {
       setCacheDoc(doc);
       await saveCacheLocal({ ...doc });
       setBuildDone(true);
-      toast.success('Context Cache built', {
-        description: `${formatPct(doc.metrics?.reduction_pct || 0)} reduction (estimated)`,
+      toast.success('AI memory updated', {
+        description: `${formatPct(doc.metrics?.reduction_pct || 0)} less unnecessary information (estimated)`,
       });
       // reload incremental status
       CacheAPI.incremental(id).then(setIncremental).catch(() => {});
@@ -173,7 +174,7 @@ export default function ProjectDetail() {
   };
 
   const runTask = async () => {
-    if (!cacheDoc) { toast.error('Build the cache first'); return; }
+    if (!cacheDoc) { toast.error('Build your AI memory first'); return; }
     if (!taskInput.trim()) { toast.error('Describe the task first'); return; }
     setBusyTask(true);
     try {
@@ -181,8 +182,8 @@ export default function ProjectDetail() {
       setTaskRun(run);
       setTasks((prev) => [run, ...prev]);
       await saveTaskLocal(run);
-      toast.success('Optimized context assembled', {
-        description: `${formatPct(run.metrics?.reduction_pct || 0)} reduction`,
+      toast.success('Prepared for your AI', {
+        description: `${formatPct(run.metrics?.reduction_pct || 0)} less to send`,
       });
     } catch (e) {
       toast.error('Task generation failed', { description: String(e?.response?.data?.detail || e?.message || e) });
@@ -224,7 +225,7 @@ export default function ProjectDetail() {
             className="bg-[color:var(--teal-500)] text-[color:var(--bg-950)] hover:bg-[color:var(--teal-400)] gap-2"
           >
             {busyBuild ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            {cacheDoc ? 'Rebuild Context Cache' : 'Build Context Cache'}
+            {cacheDoc ? 'Update AI memory' : 'Build AI memory'}
           </Button>
         </div>
       </div>
@@ -236,8 +237,8 @@ export default function ProjectDetail() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Add context</div>
-                  <div className="text-sm text-[color:var(--ink-50)] mt-0.5">Paste text or drop files. Everything gets bucketed.</div>
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Give your AI more knowledge</div>
+                  <div className="text-sm text-[color:var(--ink-50)] mt-0.5">Paste text, drop files, or add notes. We keep only what matters.</div>
                 </div>
                 <div className="text-[11px] font-mono tabular text-[color:var(--ink-400)]">
                   {formatTokens(totals.total_tokens)} tokens · estimated
@@ -289,11 +290,11 @@ export default function ProjectDetail() {
           <Card className="bg-[color:var(--surface-850)] border-[color:var(--border-700)]">
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
-                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Ingested sources</div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">What you&rsquo;ve added</div>
                 <div className="text-[11px] font-mono text-[color:var(--ink-400)]">{sources.length} items</div>
               </div>
               {sources.length === 0 ? (
-                <div className="mt-4 text-sm text-[color:var(--ink-400)]">Add context above to begin.</div>
+                <div className="mt-4 text-sm text-[color:var(--ink-400)]">Add information above to begin.</div>
               ) : (
                 <ul className="mt-4 space-y-1.5 max-h-[240px] overflow-y-auto pr-1">
                   {sources.map((s) => (
@@ -331,26 +332,55 @@ export default function ProjectDetail() {
         <div className="space-y-4">
           <Card className="bg-[color:var(--surface-850)] border-[color:var(--border-700)]">
             <CardContent className="p-5">
-              <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Compression</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Usage reduced</div>
+                <div data-testid={PROJECT.simpleToggle} className="inline-flex rounded-md border border-[color:var(--border-700)] bg-[color:var(--surface-800)] p-0.5 text-[11px]">
+                  <button
+                    onClick={() => setAdvancedUsage(false)}
+                    className={`px-2 py-1 rounded ${!advancedUsage ? 'bg-[color:var(--bg-900)] text-[color:var(--teal-300)]' : 'text-[color:var(--ink-400)]'}`}
+                  >
+                    Simple
+                  </button>
+                  <button
+                    onClick={() => setAdvancedUsage(true)}
+                    className={`px-2 py-1 rounded ${advancedUsage ? 'bg-[color:var(--bg-900)] text-[color:var(--teal-300)]' : 'text-[color:var(--ink-400)]'}`}
+                  >
+                    Advanced
+                  </button>
+                </div>
+              </div>
+
               <div className="mt-2 flex items-end gap-3 flex-wrap">
                 <div data-testid={PROJECT.compressionMetric} className="metric-num text-5xl leading-none text-[color:var(--mint-400)]">
                   {cacheDoc ? formatPct(cacheDoc.metrics?.reduction_pct || 0) : '—'}
                 </div>
-                <div className="text-[11px] font-mono text-[color:var(--ink-400)]">estimated context reduction</div>
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <MetricPill label="Original" value={formatTokens(cacheDoc?.metrics?.raw_tokens?.total || totals.total_tokens)} sub="raw tokens" tone="muted" arrow={ArrowUpRight} />
-                <MetricPill label="Context cache" value={formatTokens(cacheDoc?.metrics?.cache_tokens || 0)} sub="compact tokens" tone="success" arrow={ArrowDownRight} />
-              </div>
-              <div className="mt-4">
-                <div className="flex items-center justify-between text-[11px] font-mono text-[color:var(--ink-400)]">
-                  <span>Information retained</span>
-                  <span className="text-[color:var(--mint-400)]">High</span>
+                <div className="text-[11px] font-mono text-[color:var(--ink-400)]">
+                  {advancedUsage ? 'estimated token reduction' : 'less unnecessary information (estimated)'}
                 </div>
-                <Progress value={cacheDoc ? 92 : 0} className="mt-2 h-1.5 bg-[color:var(--surface-800)]" />
               </div>
+
+              {advancedUsage ? (
+                <>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <MetricPill label="Before" value={formatTokens(cacheDoc?.metrics?.raw_tokens?.total || totals.total_tokens)} sub="original tokens" tone="muted" arrow={ArrowUpRight} />
+                    <MetricPill label="After" value={formatTokens(cacheDoc?.metrics?.cache_tokens || 0)} sub="optimized tokens" tone="success" arrow={ArrowDownRight} />
+                  </div>
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between text-[11px] font-mono text-[color:var(--ink-400)]">
+                      <span>Information retained</span>
+                      <span className="text-[color:var(--mint-400)]">High</span>
+                    </div>
+                    <Progress value={cacheDoc ? 92 : 0} className="mt-2 h-1.5 bg-[color:var(--surface-800)]" />
+                  </div>
+                </>
+              ) : (
+                <p className="mt-4 text-sm text-[color:var(--ink-400)]">
+                  Your AI no longer has to reprocess everything each time — only the useful information is kept.
+                </p>
+              )}
+
               <div className="mt-3 text-[11px] font-mono text-[color:var(--ink-600)]">
-                {cacheDoc ? `Cache v${cacheDoc.version} · built ${formatRelativeTime(cacheDoc.created_at)}` : 'No cache yet.'}
+                {cacheDoc ? `AI memory v${cacheDoc.version} · updated ${formatRelativeTime(cacheDoc.created_at)}` : 'No AI memory yet.'}
               </div>
             </CardContent>
           </Card>
@@ -377,11 +407,11 @@ export default function ProjectDetail() {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Context Cache</div>
-              <div className="text-lg font-semibold">Project Knowledge — v{cacheDoc.version}</div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">AI Memory</div>
+              <div className="text-lg font-semibold">What your AI knows — v{cacheDoc.version}</div>
             </div>
             <div className="text-[11px] font-mono text-[color:var(--ink-400)]">
-              {cacheDoc.metrics?.knowledge_items || 0} items · {formatTokens(cacheDoc.metrics?.cache_tokens || 0)} tokens · estimated
+              {cacheDoc.metrics?.knowledge_items || 0} things remembered · {formatTokens(cacheDoc.metrics?.cache_tokens || 0)} tokens · estimated
             </div>
           </div>
           <ContextCachePanels cache={cacheDoc.cache} />
@@ -394,11 +424,11 @@ export default function ProjectDetail() {
           <CardContent className="p-5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
-                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Task Context Generator</div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)]">Prepare for AI</div>
                 <div className="text-lg font-semibold">What are you working on?</div>
               </div>
               <div className="text-[11px] font-mono text-[color:var(--ink-400)]">
-                Runtime returns only what matters.
+                We&rsquo;ll prepare only the information your AI needs.
               </div>
             </div>
 
@@ -416,26 +446,26 @@ export default function ProjectDetail() {
               </span>
               <Button data-testid={PROJECT.taskSubmit} onClick={runTask} disabled={busyTask || !taskInput.trim()} className="bg-[color:var(--teal-500)] text-[color:var(--bg-950)] hover:bg-[color:var(--teal-400)] gap-2">
                 {busyTask ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                Generate Context
+                Prepare for AI
               </Button>
             </div>
 
             {taskRun && (
               <div className="mt-6 grid grid-cols-1 xl:grid-cols-[1fr_1fr] gap-4">
                 <div className="space-y-3">
-                  <RelevanceList title="Relevant" data={taskRun.selection?.relevant} positive />
-                  <RelevanceList title="Ignored" data={taskRun.selection?.ignored} positive={false} />
+                  <RelevanceList title="Relevant information" data={taskRun.selection?.relevant} positive />
+                  <RelevanceList title="Not needed right now" data={taskRun.selection?.ignored} positive={false} />
                   <TokenComparisonTable metrics={taskRun.metrics} />
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-[0.14em] text-[color:var(--ink-600)] mb-2">
-                    Optimized AI context · {formatTokens(taskRun.metrics?.optimized_tokens || 0)} tokens (estimated)
+                    Ready to paste into your AI · {formatTokens(taskRun.metrics?.optimized_tokens || 0)} tokens (estimated)
                   </div>
                   <CodeBlock
                     content={taskRun.selection?.assembled_context || ''}
                     testId={PROJECT.optimizedBlock}
                     copyTestId={PROJECT.copyContext}
-                    ariaLabel="Optimized AI context"
+                    ariaLabel="Prepared context for your AI"
                   />
                 </div>
               </div>
