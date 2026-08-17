@@ -1,6 +1,6 @@
 # Overhaust Evaluation Report
 
-_Generated: 2026-08-17T16:50:25_
+_Generated: 2026-08-17T16:50:56_
 
 All token counts are **measured** via tiktoken (`cl100k_base`). Reduction % is an **estimate** (tiktoken is not provider billing). Retention / removal use **human-reviewed** ground-truth expectations defined in `tests/evaluation/scenarios.py`.
 
@@ -43,17 +43,17 @@ No hard failures across the scenario suite (all critical info retained, all know
 
 ## Real-project test (Overhaust repo indexed by the engine)
 
-- Files indexed: **65** (83617 tokens) in **120.5ms** _(measured)_
+- Files indexed: **65** (83617 tokens) in **110.5ms** _(measured)_
 - Retrieval hit-rate: **80.0%** _(human-reviewed relevance)_
-- Average query latency: **1.05ms** _(measured)_
+- Average query latency: **0.99ms** _(measured)_
 
 | Query | Latency | Context tokens | Result | Relevant files |
 |-------|--------:|---------------:|--------|----------------|
-| How does conversation ingestion work? | 1.07ms | 330 | HIT | services/ingestion/conversation.py, services/ingestion/test_conversation.py |
-| Where is memory stored? | 1.02ms | 266 | MISS | (none) |
-| How does context selection work? | 1.03ms | 290 | HIT | packages/context/test_context_builder.py |
-| How does the MCP server expose tools? | 1.1ms | 132 | HIT | services/mcp_server/server.py, services/mcp_server/__init__.py, services/mcp_server/test_server.py |
-| Where should I modify relevance scoring? | 1.01ms | 309 | HIT | packages/context/test_relevance.py, packages/context/relevance.py |
+| How does conversation ingestion work? | 1.04ms | 330 | HIT | services/ingestion/conversation.py, services/ingestion/test_conversation.py |
+| Where is memory stored? | 0.95ms | 266 | MISS | (none) |
+| How does context selection work? | 0.97ms | 290 | HIT | packages/context/test_context_builder.py |
+| How does the MCP server expose tools? | 1.0ms | 132 | HIT | services/mcp_server/server.py, services/mcp_server/__init__.py, services/mcp_server/test_server.py |
+| Where should I modify relevance scoring? | 0.99ms | 309 | HIT | packages/context/test_relevance.py, packages/context/relevance.py |
 
 ## Where Overhaust works best / worst
 
