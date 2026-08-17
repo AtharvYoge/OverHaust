@@ -356,13 +356,15 @@ function App() {
               <strong>Prepared:</strong> {contextResult?.estimated_tokens} estimated tokens
             </div>
             <div>
-              <strong>Potential reduction:</strong>
               {(() => {
                 const orig = ingestionResult?.original_tokens || 0;
                 const prep = contextResult?.estimated_tokens || 0;
-                const pct = orig > 0 ? ((orig - prep) / orig * 100).toFixed(1) : '0.0';
-                return `${pct}%`;
-              })()} <span className="note">(Estimated)</span>
+                if (prep >= orig) {
+                  return <span><strong>This input is already compact.</strong> <span className="note">(not enough repetition to optimize)</span></span>;
+                }
+                const pct = ((orig - prep) / orig * 100).toFixed(1);
+                return <span><strong>Estimated context reduction:</strong> {pct}% <span className="note">(Estimated)</span></span>;
+              })()}
             </div>
           </div>
           <div className="actions">

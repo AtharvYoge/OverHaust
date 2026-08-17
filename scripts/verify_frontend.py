@@ -40,6 +40,9 @@ for s in ['Are Your AI Tokens', 'Add something for your AI to remember',
 # 5. No token fabrication
 check('uses estimated label', 'Estimated' in src or 'estimated' in src)
 check('does not claim real savings', 'actual savings' not in src.lower())
+# 6. Product rule: never show negative reduction
+check('has "already compact" branch', 'already compact' in src.lower())
+check('guards prep >= orig', 'prep >= orig' in src)
 
 print()
 if fails:

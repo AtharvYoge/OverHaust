@@ -193,10 +193,13 @@ _DECISION_PATTERNS = [
     r"\blet'?s (?:use|go with|stick with) (.{8,300})",
 ]
 _OPEN_ISSUE_PATTERNS = [
+    r"\b(?:the )?\w[\w\s]{2,40} (?:is|keeps|are) (?:broken|failing|crashing|not working|still broken|still open|still failing)\b.{0,150}",
     r"\bthere'?s (?:an? )?(?:bug|issue|problem|error)\b.{0,200}",
-    r"\b(?:still|currently) (?:broken|failing|not working|crashing)\b.{0,200}",
-    r"\b(?:todo|fixme|need to fix|haven'?t fixed)\b[:：]?.{0,200}",
-    r"\b(?:the )?\w[\w\s]{2,40} (?:is|keeps) (?:broken|failing|crashing|not working)\b.{0,150}",
+    r"\bthere is (?:an? )?(?:bug|issue|problem|error|open question)\b.{0,200}",
+    r"\b(?:open issue|open question)\b[:：]?.{0,200}",
+    r"\b(?:still|currently) (?:broken|failing|not working|crashing|open)\b.{0,200}",
+    r"\bis still open\b.{0,200}",
+    r"\b(?:todo|fixme|need to fix|needs fixing|haven'?t fixed|haven'?t decided)\b[:：]?.{0,200}",
 ]
 _RESOLVED_PATTERNS = [
     r"\b(?:fixed|resolved|solved|closed)\b[:：]?\s*(.{8,200})",
@@ -212,12 +215,15 @@ _PERMANENT_PATTERNS = [
     r"\b(?:architecture|stack|tech stack)[:：]\s*(.{10,300})",
     r"\b(?:we|the project) (?:use|uses|runs on|is built (?:on|with))\b(.{10,300})",
     r"\b(?:constraint|requirement)[:：]\s*(.{10,300})",
+    r"\b(?:database|backend|frontend|framework|language)[:：]?\s+(?:is|are)\s+(.{5,200})",
     r"\b(?:database|backend|frontend|framework|language)[:：]\s*(.{5,200})",
-    r"\b(?:the project is|this project is|we'?re building)\b(.{10,300})",
+    r"\bthe (?:\w+ )?(?:architecture|service architecture)[:：]?\s*(.{10,300})",
+    r"\b(?:the project is|this project is|we'?re building|the project is a)\b(.{5,300})",
+    r"\bthe constraint is\b[:：]?\s*(.{8,300})",
 ]
 _CURRENT_TASK_PATTERNS = [
     r"\b(?:currently|right now|now) (?:working on|implementing|building|fixing)\b(.{0,250})",
-    r"\b(?:the goal|the task|objective) (?:is|here is)[:：]?\s*(.{10,250})",
+    r"\b(?:the goal|the task|the current task|objective) (?:is|here is)[:：]?\s*(.{8,250})",
     r"\b(?:i need to|we need to|next step is to)\b(.{10,250})",
 ]
 _IRRELEVANT_PATTERNS = [
