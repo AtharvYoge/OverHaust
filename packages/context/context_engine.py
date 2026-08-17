@@ -210,15 +210,18 @@ class KnowledgeExtractor:
 
 
 class ContextAssembler:
-    """Assembles context packages for AI consumption based on project knowledge and task."""
-    
+    """Assembles context packages for AI consumption based on project knowledge and task.
+    Uses the layered relevance engine; every selection carries an explanation."""
+
     def __init__(self, memory_store=None, token_estimator=None):
         from packages.memory.memory_store import get_memory_store
         from packages.tokenization.token_estimator import TokenEstimator
-        
+        from packages.context.relevance import LayeredRelevanceEngine
+
         self.memory_store = memory_store or get_memory_store()
         self.token_estimator = token_estimator or TokenEstimator()
         self.knowledge_extractor = KnowledgeExtractor()
+        self.relevance = LayeredRelevanceEngine(self.memory_store)
     
     def assemble_context(self, project_id: str, task: str, 
                         max_knowledge_items: int = 10,
@@ -297,44 +300,32 @@ class ContextAssembler:
         logger.info(f"Assembled context package {context_id} for project {project_id}")
         return context_package
     
-    def _get_relevant_knowledge(self, project_id: str, task: str, 
+    def _get_relevant_knowledge(self, project_id: str, task: str,
                                limit: int) -> List[ExtractedKnowledge]:
-        """Get knowledge relevant to the task."""
-        # Search memories with task-related terms
-        task_keywords = self._extract_keywords(task)
-        
-        relevant_items = []
-        for keyword in task_keywords[:3]:  # Use top 3 keywords
-            memories = self.memory_store.search_memories(
-                project_id, keyword, limit=limit
+        """Get knowledge relevant to the task via the layered relevance engine.
+        Returns items ranked by relevance score with explanations attached
+        in metadata['relevance']."""
+        scored = self.relevance.search(project_id, task, limit=limit)
+        items: List[ExtractedKnowledge] = []
+        for sm in scored:
+            mem = sm.memory
+            meta = dict(mem.get('metadata') or {})
+            meta['relevance'] = {'score': sm.score, 'reasons': sm.reasons}
+            knowledge = ExtractedKnowledge(
+                id=mem['id'],
+                project_id=mem['project_id'],
+                source_type=meta.get('source_type', 'memory'),
+                source_title=meta.get('provenance', meta.get('source_id', 'Memory')),
+                title=meta.get('title', f"Knowledge from {mem['id']}"),
+                content=mem['content'],
+                knowledge_type=meta.get('knowledge_type', 'general'),
+                importance_score=mem['importance_score'],
+                extracted_at=str(mem['created_at']),
+                metadata=meta,
+                source_hash=mem.get('source_hash', '')
             )
-            
-            # Convert memories to ExtractedKnowledge format
-            for mem in memories:
-                knowledge = ExtractedKnowledge(
-                    id=mem['id'],
-                    project_id=mem['project_id'],
-                    source_type=mem.get('metadata', {}).get('source_type', 'memory'),
-                    source_title=mem.get('metadata', {}).get('source_title', 'Memory'),
-                    title=mem.get('metadata', {}).get('title', f"Knowledge from {mem['id']}"),
-                    content=mem['content'],
-                    knowledge_type=mem.get('metadata', {}).get('knowledge_type', 'general'),
-                    importance_score=mem['importance_score'],
-                    extracted_at=mem['created_at'],
-                    metadata=mem.get('metadata', {}),
-                    source_hash=mem.get('source_hash', '')
-                )
-                relevant_items.append(knowledge)
-        
-        # Deduplicate and sort by importance
-        seen_ids = set()
-        unique_items = []
-        for item in sorted(relevant_items, key=lambda x: x.importance_score, reverse=True):
-            if item.id not in seen_ids:
-                seen_ids.add(item.id)
-                unique_items.append(item)
-                
-        return unique_items[:limit]
+            items.append(knowledge)
+        return items
     
     def _get_relevant_files(self, project_id: str, task: str, 
                            limit: int) -> List[Dict[str, Any]]:
