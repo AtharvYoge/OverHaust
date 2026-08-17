@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class MemoryStore:
     """Handles persistent storage of memories and project knowledge."""
     
-    def __init__(self, db_path: str = "overhaust_memory.db"):
+    def __init__(self, db_path: str = "/Users/atharv11/Desktop/overhaust/overhaust_memory.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
