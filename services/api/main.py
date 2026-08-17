@@ -392,5 +392,82 @@ async def get_project(
         logger.error(f"Error getting project: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# Ingestion endpoints (conversation compression + project indexing)
+# ---------------------------------------------------------------------------
+
+class IngestConversationRequest(BaseModel):
+    project_id: str
+    content: str
+    conversation_id: Optional[str] = None
+    store: bool = True
+
+@app.post("/api/v1/ingest-conversation")
+async def ingest_conversation(
+    request: IngestConversationRequest,
+    memory_store: MemoryStore = Depends(get_memory_store_dep)
+):
+    """Ingest a conversation: parse, classify, dedupe, optionally store with provenance.
+    Returns an honest per-category token breakdown (estimated)."""
+    if len(request.content) > 5_000_000:
+        raise HTTPException(status_code=413, detail="Conversation too large (5MB max)")
+    try:
+        from services.ingestion.conversation import ConversationIngestor, compression_report
+        ing = ConversationIngestor()
+        result = ing.ingest_text(request.content, request.conversation_id)
+        stored_ids: List[str] = []
+        if request.store:
+            if memory_store.get_project(request.project_id) is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"Project {request.project_id} not found; create it first")
+            stored_ids = ing.store_result(result, request.project_id, memory_store)
+        report = compression_report(result)
+        return {**report, "stored_memory_ids": stored_ids}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ingestion failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IndexProjectRequest(BaseModel):
+    project_id: str
+    root_path: str
+
+@app.post("/api/v1/index-project")
+async def index_project(request: IndexProjectRequest):
+    """Index an authorized project directory: files, symbols, imports, dependencies."""
+    try:
+        from services.ingestion.project_indexer import ProjectIndexer, PathSecurityError
+        idx = ProjectIndexer().index_project(request.root_path, request.project_id)
+        return {
+            "project_id": idx.project_id,
+            "root_path": idx.root_path,
+            "file_count": len(idx.files),
+            "total_tokens": idx.total_tokens,
+            "estimated": True,
+            "stats": idx.stats,
+            "indexed_at": idx.indexed_at,
+        }
+    except PathSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Indexing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/connections")
+async def list_connections():
+    """List agent connections with honest availability status."""
+    from services.agent.connections import default_registry
+    reg = default_registry(project_root="/Users/atharv11/Desktop/overhaust")
+    return {"connections": [
+        {"id": i.id, "name": i.name, "kind": i.kind,
+         "status": i.status.value, "description": i.description,
+         "capabilities": i.capabilities}
+        for i in reg.list_connections()
+    ]}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
