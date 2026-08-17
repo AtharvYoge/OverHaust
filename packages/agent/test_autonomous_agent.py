@@ -195,18 +195,26 @@ def test_agent_context_retrieval():
 
 def test_agent_action_history():
     """Test agent action history tracking."""
-    agent = OverhaustAgent("test-agent-005")
-    
-    # Perform some actions
-    agent.understand_task("Test task")
-    agent.get_project_context("test-project", "Test context")
-    
-    history = agent.get_action_history(5)
-    assert len(history) == 2
-    assert history[0].action_type == "understand_task"
-    assert history[1].action_type == "get_project_context"
-    assert all(action.success for action in history)
-    print("✓ Agent action history tracked correctly")
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+        db_path = tmp.name
+    try:
+        store = MemoryStore(db_path)
+        store.add_project("test-project", "T", "", "")
+        agent = OverhaustAgent("test-agent-005", memory_store=store)
+        
+        # Perform some actions
+        agent.understand_task("Test task")
+        agent.get_project_context("test-project", "Test context")
+        
+        history = agent.get_action_history(5)
+        assert len(history) == 2
+        assert history[0].action_type == "understand_task"
+        assert history[1].action_type == "get_project_context"
+        assert all(action.success for action in history)
+        print("✓ Agent action history tracked correctly")
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
 
 
 def test_global_agent():

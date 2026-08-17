@@ -63,7 +63,9 @@ class OverhaustAgent:
         self.agent_id = agent_id
         self.memory_store = memory_store or get_memory_store()
         self.token_estimator = token_estimator or TokenEstimator()
-        self.context_assembler = get_context_assembler()
+        # Build assembler with same stores so injected test doubles are respected
+        from packages.context.context_engine import ContextAssembler
+        self.context_assembler = ContextAssembler(self.memory_store, self.token_estimator)
         
         # Action history for this agent session
         self.action_history: List[AgentAction] = []
@@ -341,18 +343,21 @@ class OverhaustAgent:
     def mark_stale(self, memory_id: str, reason: str = "") -> bool:
         """
         Mark a memory as stale (no longer relevant).
-        
-        Args:
-            memory_id: ID of the memory to mark as stale
-            reason: Reason for marking as stale
-            
-        Returns:
-            True if successful, False otherwise
+        Preserves existing metadata, merges stale flags.
         """
+        existing = self.memory_store.get_memory(memory_id)
+        if existing is None:
+            return False
+        merged_meta = dict(existing.get('metadata') or {})
+        merged_meta.update({
+            "stale": True,
+            "stale_reason": reason,
+            "stale_date": datetime.now().isoformat()
+        })
         success = self.memory_store.update_memory(
             memory_id,
-            importance_score=0.1,  # Very low importance
-            metadata={"stale": True, "stale_reason": reason, "stale_date": datetime.now().isoformat()}
+            importance_score=0.1,
+            metadata=merged_meta
         )
         
         self._record_action(

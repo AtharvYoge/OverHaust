@@ -30,14 +30,23 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware - restrict to known local dev origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+# Input size limits
+MAX_CONTENT_LENGTH = 1_000_000  # 1MB text limit
+MAX_QUERY_LENGTH = 500
 
 # Pydantic models for request/response
 class TaskRequest(BaseModel):
@@ -190,6 +199,8 @@ async def update_memory(
 ):
     """Update project memory with new information."""
     try:
+        if len(request.content) > MAX_CONTENT_LENGTH:
+            raise HTTPException(status_code=413, detail="Content exceeds maximum length")
         memory_type = request.memory_type if request.memory_type is not None else "temporary"
         importance_score = request.importance_score if request.importance_score is not None else 0.5
         memory_id = agent.update_memory(
@@ -203,6 +214,10 @@ async def update_memory(
             "memory_id": memory_id,
             "message": "Memory updated successfully"
         }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating memory: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -228,15 +243,22 @@ async def search_knowledge(
         logger.error(f"Error searching knowledge: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class MarkResolvedRequest(BaseModel):
+    project_id: str
+    issue_description: str
+
+class MarkStaleRequest(BaseModel):
+    memory_id: str
+    reason: Optional[str] = ""
+
 @app.post("/api/v1/mark-resolved")
 async def mark_resolved(
-    project_id: str,
-    issue_description: str,
+    request: MarkResolvedRequest,
     agent: OverhaustAgent = Depends(get_agent)
 ):
     """Mark an issue as resolved."""
     try:
-        memory_id = agent.mark_resolved(project_id, issue_description)
+        memory_id = agent.mark_resolved(request.project_id, request.issue_description)
         return {
             "memory_id": memory_id,
             "message": "Issue marked as resolved"
@@ -247,17 +269,18 @@ async def mark_resolved(
 
 @app.post("/api/v1/mark-stale")
 async def mark_stale(
-    memory_id: str,
-    reason: str = "",
+    request: MarkStaleRequest,
     agent: OverhaustAgent = Depends(get_agent)
 ):
     """Mark a memory as stale."""
     try:
-        success = agent.mark_stale(memory_id, reason)
+        success = agent.mark_stale(request.memory_id, request.reason or "")
         if success:
             return {"message": "Memory marked as stale"}
         else:
             raise HTTPException(status_code=404, detail="Memory not found")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error marking stale: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -330,6 +353,28 @@ async def get_agent_history(
         }
     except Exception as e:
         logger.error(f"Error getting agent history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class CreateProjectRequest(BaseModel):
+    project_id: str
+    name: str
+    description: Optional[str] = ""
+    root_path: Optional[str] = ""
+
+@app.post("/api/v1/projects")
+async def create_project(
+    request: CreateProjectRequest,
+    memory_store: MemoryStore = Depends(get_memory_store_dep)
+):
+    """Create or update a project."""
+    try:
+        pid = memory_store.add_project(
+            request.project_id, request.name,
+            request.description or "", request.root_path or ""
+        )
+        return {"project_id": pid, "message": "Project created"}
+    except Exception as e:
+        logger.error(f"Error creating project: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/projects/{project_id}")

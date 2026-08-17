@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 class MemoryStore:
     """Handles persistent storage of memories and project knowledge."""
     
-    def __init__(self, db_path: str = "/Users/atharv11/Desktop/overhaust/overhaust_memory.db"):
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            # Default to data/ directory relative to project root, resolved at runtime
+            project_root = Path(__file__).resolve().parents[2]
+            db_path = str(project_root / "data" / "overhaust_memory.db")
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -85,19 +89,11 @@ class MemoryStore:
     def add_memory(self, project_id: str, content: str, memory_type: str = "temporary",
                    importance_score: float = 0.5, metadata: Optional[Dict] = None) -> str:
         """
-        Add a new memory to the store.
-        
-        Args:
-            project_id: ID of the project this memory belongs to
-            content: The memory content
-            memory_type: Type of memory ('permanent', 'temporary', 'task', 'resolved', 'stale')
-            importance_score: Importance score from 0.0 to 1.0
-            metadata: Additional metadata as dictionary
-            
-        Returns:
-            Memory ID
+        Add a new memory to the store. Raises ValueError if project does not exist.
         """
-        memory_id = self._generate_id(content)
+        if self.get_project(project_id) is None:
+            raise ValueError(f"Project {project_id} does not exist; create it first")
+        memory_id = self._generate_id(f"{project_id}:{content}")
         source_hash = self._generate_source_hash(content)
         metadata_json = json.dumps(metadata) if metadata else None
         
@@ -123,6 +119,12 @@ class MemoryStore:
             
             if row:
                 memory = dict(row)
+                # Parse metadata JSON if present
+                if memory.get('metadata'):
+                    try:
+                        memory['metadata'] = json.loads(memory['metadata'])
+                    except (json.JSONDecodeError, TypeError):
+                        memory['metadata'] = {}
                 # Update access tracking
                 self._update_access(memory_id)
                 return memory
