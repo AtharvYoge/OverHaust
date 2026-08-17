@@ -162,6 +162,15 @@ class LayeredRelevanceEngine:
             for qk in q_keywords - overlap:
                 if _stem_variants(qk) & content_words:
                     overlap = overlap | {qk}
+            # compound/partial matching: query "websocket" matches content
+            # "socket", "websockets"; guards against missing near-matches
+            # that a future vector engine will handle properly.
+            for qk in q_keywords - overlap:
+                if len(qk) >= 5:
+                    for cw in content_words:
+                        if (qk in cw or cw in qk) and len(cw) >= 4:
+                            overlap = overlap | {qk}
+                            break
             if overlap:
                 kw_score = 0.6 + math.log1p(len(overlap))
                 score += kw_score
