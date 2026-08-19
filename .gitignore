@@ -10,3 +10,8 @@ dist/
 *.log
 .pytest_cache/
 .vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
