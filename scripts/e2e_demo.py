@@ -2,7 +2,9 @@
 """Simulate the full Overhaust user flow via the real API."""
 import json, sys, urllib.request, urllib.error
 
-BASE = "http://localhost:8000"
+import os
+
+BASE = os.getenv("OVERHAUST_API_BASE_URL", "http://localhost:8000")
 
 def call(endpoint, data=None):
     body = json.dumps(data).encode() if data else None

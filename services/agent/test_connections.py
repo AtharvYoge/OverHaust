@@ -55,11 +55,12 @@ def test_registry_blocks_unavailable():
 
 def test_ide_config_generation_and_merge():
     with tempfile.TemporaryDirectory() as tmp:
-        adapter = IDEConfigAdapter('cursor', project_root='/Users/atharv11/Desktop/overhaust')
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        adapter = IDEConfigAdapter('cursor', project_root=project_root)
         cfg = adapter.generate_config()
         server = cfg['mcpServers']['overhaust']
         assert server['args'] == ['-m', 'services.mcp_server.server']
-        assert server['env']['PYTHONPATH'] == '/Users/atharv11/Desktop/overhaust'
+        assert server['env']['PYTHONPATH'] == project_root
         target = os.path.join(tmp, 'mcp.json')
         # pre-existing config with another server must be preserved
         with open(target, 'w') as f:

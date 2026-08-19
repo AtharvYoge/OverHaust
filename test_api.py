@@ -61,9 +61,9 @@ memory_store.add_memory(
 print('Project and memories added to memory store.')
 
 # Now test the API endpoints
-base_url = 'http://localhost:8000'
+base_url = os.getenv('OVERHAUST_API_BASE_URL', 'http://localhost:8000')
 
-def test_endpoint(method, endpoint, data=None, description=''):
+def check_endpoint(method, endpoint, data=None, description=''):
     """Helper function to test an endpoint and print results."""
     try:
         if method == 'GET':
@@ -91,28 +91,28 @@ def test_endpoint(method, endpoint, data=None, description=''):
         return None
 
 # Test root endpoint
-test_endpoint('GET', '/', None, 'Root endpoint:')
+check_endpoint('GET', '/', None, 'Root endpoint:')
 
 # Test health endpoint
-test_endpoint('GET', '/health', None, 'Health endpoint:')
+check_endpoint('GET', '/health', None, 'Health endpoint:')
 
 # Test understand-task endpoint
-test_endpoint('POST', '/api/v1/understand-task', 
+check_endpoint('POST', '/api/v1/understand-task', 
               {'project_id': project_id, 'task': 'How should we build the frontend?'}, 
               'Understand task endpoint:')
 
 # Test get-context endpoint
-test_endpoint('POST', '/api/v1/get-context', 
+check_endpoint('POST', '/api/v1/get-context', 
               {'project_id': project_id, 'task': 'What technology should we use for frontend?', 'max_knowledge_items': 5}, 
               'Get context endpoint:')
 
 # Test estimate-tokens endpoint
-test_endpoint('POST', '/api/v1/estimate-tokens', 
+check_endpoint('POST', '/api/v1/estimate-tokens', 
               {'text': 'Hello, world! This is a test.', 'model': 'gpt-4'}, 
               'Estimate tokens endpoint:')
 
 # Test estimate-reduction endpoint
-test_endpoint('POST', '/api/v1/estimate-reduction', 
+check_endpoint('POST', '/api/v1/estimate-reduction', 
               {
                   'original_text': 'This is a very long sentence that contains lots of information that might not be necessary for the AI to process. ' * 3,
                   'optimized_text': 'This is a test.',
@@ -121,12 +121,12 @@ test_endpoint('POST', '/api/v1/estimate-reduction',
               'Estimate reduction endpoint:')
 
 # Test search-knowledge endpoint
-test_endpoint('POST', '/api/v1/search-knowledge', 
+check_endpoint('POST', '/api/v1/search-knowledge', 
               {'project_id': project_id, 'query': 'frontend', 'limit': 5}, 
               'Search knowledge endpoint:')
 
 # Test mark-resolved endpoint
-test_endpoint('POST', '/api/v1/mark-resolved', 
+check_endpoint('POST', '/api/v1/mark-resolved', 
               {'project_id': project_id, 'issue_description': 'Fixed the memory extraction speed issue'}, 
               'Mark resolved endpoint:')
 
@@ -139,9 +139,9 @@ try:
         search_results = search_resp.json()
         if search_results.get('results') and len(search_results['results']) > 0:
             memory_id = search_results['results'][0]['id']
-            test_endpoint('POST', '/api/v1/mark-stale', 
-                          {'memory_id': memory_id, 'reason': 'Decision was revised in a later meeting'}, 
-                          'Mark stale endpoint:')
+            check_endpoint('POST', '/api/v1/mark-stale', 
+                           {'memory_id': memory_id, 'reason': 'Decision was revised in a later meeting'}, 
+                           'Mark stale endpoint:')
         else:
             print('\\nMark stale endpoint:')
             print('No memories found to mark as stale.')

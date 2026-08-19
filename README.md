@@ -35,21 +35,24 @@ git clone https://github.com/yourusername/overhaust.git
 cd overhaust
 
 # Install Python dependencies
-pip install -r requirements.txt  # We'll create this later
+python -m pip install -r requirements.txt
 
-# Start the API server
-cd services/api
-PYTHONPATH=/Users/atharv11/Desktop/overhaust python main.py
+# Start the API server from the repo root
+python -m services.api.main
 ```
 
-The API will be available at http://localhost:8000
+The API will be available at http://localhost:8000 by default. Override the base URL with:
+
+```bash
+export OVERHAUST_API_BASE_URL=http://localhost:8000
+```
 
 ### Frontend Setup
 
 ```bash
 cd apps/web
 npm install
-npm run dev
+VITE_API_BASE_URL=http://localhost:8000 npm run dev
 ```
 
 ## API Documentation

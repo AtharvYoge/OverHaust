@@ -11,6 +11,8 @@ from datetime import datetime
 import hashlib
 import logging
 
+from services.ingestion.project_indexer import ProjectIndexer
+
 logger = logging.getLogger(__name__)
 
 
@@ -329,19 +331,61 @@ class ContextAssembler:
     
     def _get_relevant_files(self, project_id: str, task: str, 
                            limit: int) -> List[Dict[str, Any]]:
-        """Get files relevant to the task (placeholder implementation)."""
-        # In a real implementation, this would scan the project directory
-        # and use file content analysis to find relevant files
-        return [
-            {
-                "id": f"file-{i}",
-                "path": f"src/component-{i}.tsx",
-                "name": f"Component {i}",
-                "relevance_score": 0.9 - (i * 0.1),
-                "last_modified": datetime.now().isoformat()
-            }
-            for i in range(min(limit, 3))
-        ]
+        """Get real files relevant to the task from the project index."""
+        project = self.memory_store.get_project(project_id)
+        if not project:
+            return []
+
+        project_root = project.get('root_path') or project.get('project_root')
+        if not project_root:
+            return []
+
+        try:
+            indexer = ProjectIndexer()
+            project_index = indexer.index_project(project_root, project_id)
+        except Exception as exc:
+            logger.warning(f"Unable to index project {project_id} for context assembly: {exc}")
+            return []
+
+        keywords = self._extract_keywords(task)
+        if not keywords:
+            return []
+
+        ranked_files: List[Dict[str, Any]] = []
+        for file_record in getattr(project_index, 'files', []) or []:
+            path = getattr(file_record, 'path', '')
+            if not path:
+                continue
+
+            score = 0.0
+            searchable_text = path.lower()
+            searchable_text += ' ' + ' '.join(
+                getattr(symbol, 'name', '') for symbol in getattr(file_record, 'symbols', []) or []
+            ).lower()
+            searchable_text += ' ' + ' '.join(getattr(file_record, 'imports', []) or []).lower()
+
+            for keyword in keywords:
+                kw = keyword.lower()
+                score += searchable_text.count(kw) * 2.0
+                if kw in path.lower():
+                    score += 2.0
+
+            # include files with any real keyword hit or common task words
+            if score <= 0:
+                continue
+
+            ranked_files.append({
+                "id": f"indexed-file-{hashlib.sha256(path.encode()).hexdigest()[:12]}",
+                "path": path,
+                "name": path.split('/')[-1],
+                "relevance_score": round(score, 3),
+                "last_modified": datetime.now().isoformat(),
+                "symbols": [getattr(symbol, 'name', '') for symbol in (getattr(file_record, 'symbols', []) or [])[:10]],
+                "kind": "indexed-file"
+            })
+
+        ranked_files.sort(key=lambda item: item['relevance_score'], reverse=True)
+        return ranked_files[:limit]
     
     def _get_current_state(self, project_id: str) -> Dict[str, Any]:
         """Get current state of the project."""

@@ -17,9 +17,11 @@ Current adapters:
 
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -119,8 +121,9 @@ class LocalAgentConnection(AgentConnection):
 class APIConnection(AgentConnection):
     """Connects to a running Overhaust FastAPI service over HTTP."""
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: Optional[str] = None):
+        default_base = os.getenv("OVERHAUST_API_BASE_URL", "http://localhost:8000")
+        self.base_url = (base_url or default_base).rstrip("/")
         self.info = ConnectionInfo(
             id="api",
             name="Overhaust API",
@@ -205,12 +208,12 @@ class IDEConfigAdapter:
     }
 
     def __init__(self, ide: str, python_path: str = "python3",
-                 project_root: str = ""):
+                 project_root: Optional[str] = None):
         if ide not in self.IDE_TARGETS:
             raise ValueError(f"unsupported IDE: {ide}")
         self.ide = ide
         self.python_path = python_path
-        self.project_root = project_root
+        self.project_root = project_root or str(Path(__file__).resolve().parents[2])
         self.info = ConnectionInfo(
             id=f"ide-{ide}",
             name=f"{ide.replace('-', ' ').title()} (MCP config)",
@@ -290,11 +293,12 @@ class ConnectionRegistry:
         return self.get(connection_id).handle(method, params)
 
 
-def default_registry(project_root: str = "") -> ConnectionRegistry:
+def default_registry(project_root: Optional[str] = None) -> ConnectionRegistry:
     reg = ConnectionRegistry()
     reg.register(LocalAgentConnection())
-    reg.register(APIConnection())
+    reg.register(APIConnection(os.getenv("OVERHAUST_API_BASE_URL", "http://localhost:8000")))
     reg.register(MCPConnection())
+    resolved_root = project_root or str(Path(__file__).resolve().parents[2])
     for ide in ("cursor", "claude-code", "windsurf"):
-        reg.register_ide(IDEConfigAdapter(ide, project_root=project_root))
+        reg.register_ide(IDEConfigAdapter(ide, project_root=resolved_root))
     return reg

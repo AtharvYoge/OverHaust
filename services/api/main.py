@@ -460,7 +460,8 @@ async def index_project(request: IndexProjectRequest):
 async def list_connections():
     """List agent connections with honest availability status."""
     from services.agent.connections import default_registry
-    reg = default_registry(project_root="/Users/atharv11/Desktop/overhaust")
+    project_root = str(Path(__file__).resolve().parents[2])
+    reg = default_registry(project_root=project_root)
     return {"connections": [
         {"id": i.id, "name": i.name, "kind": i.kind,
          "status": i.status.value, "description": i.description,

@@ -9,8 +9,11 @@ Checks:
   - No fake/token-fabrication language
 """
 import subprocess, os, sys
+from pathlib import Path
 
-WEB = "/Users/atharv11/Desktop/overhaust/apps/web"
+ROOT = Path(__file__).resolve().parents[1]
+WEB = ROOT / "apps" / "web"
+WEB = str(WEB)
 APPTSX = os.path.join(WEB, "src/App.tsx")
 fails = []
 
