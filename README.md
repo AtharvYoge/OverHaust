@@ -65,4 +65,4 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for development guidelines.
 
 ## License
 
-MIT
+© All rights and trademarks are reserved to Peace Labs Creative; it includes the name "Overhaust", "overhaust", "OverHaust" along with the trademarked ™ logo.
