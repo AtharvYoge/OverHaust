@@ -89,4 +89,3 @@ Overhaust is designed as a modular system with three main layers:
 - User authentication and multi-tenant support
 - Analytics dashboard for usage tracking
 - Integration with specific AI agents (Cursor, Claude Code, etc.)
-EOF

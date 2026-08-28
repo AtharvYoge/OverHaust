@@ -381,6 +381,18 @@ class ConversationIngestor:
         for mem in result.memories:
             if mem.category == 'irrelevant':
                 continue  # don't store chatter
+            source_ref = mem.provenance
+            if memory_store.extraction_exists(project_id, source_ref, mem.content):
+                continue
+            extraction_payload = {
+                'category': mem.category,
+                'content': mem.content,
+                'confidence': mem.confidence,
+                'status': mem.status,
+                'message_index': mem.message_index,
+                'role': mem.role,
+                'conversation_id': mem.conversation_id,
+            }
             metadata = {
                 'knowledge_type': mem.category,
                 'source_type': mem.source_type,
@@ -399,6 +411,15 @@ class ConversationIngestor:
                 importance_score=mem.importance,
                 metadata=metadata,
             )
+            ext_id = memory_store.add_knowledge_extraction(
+                project_id=project_id,
+                extraction_type=mem.source_type,
+                source_ref=source_ref,
+                extracted_knowledge=extraction_payload,
+                memory_id=mem_id,
+            )
+            metadata['extraction_id'] = ext_id
+            memory_store.update_memory(mem_id, metadata=metadata)
             ids.append(mem_id)
         return ids
 

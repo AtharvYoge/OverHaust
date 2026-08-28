@@ -11,8 +11,6 @@ from datetime import datetime
 import hashlib
 import logging
 
-from services.ingestion.project_indexer import ProjectIndexer
-
 logger = logging.getLogger(__name__)
 
 
@@ -218,12 +216,12 @@ class ContextAssembler:
     def __init__(self, memory_store=None, token_estimator=None):
         from packages.memory.memory_store import get_memory_store
         from packages.tokenization.token_estimator import TokenEstimator
-        from packages.context.relevance import LayeredRelevanceEngine
+        from packages.context.retrieval import get_relevance_engine
 
         self.memory_store = memory_store or get_memory_store()
         self.token_estimator = token_estimator or TokenEstimator()
         self.knowledge_extractor = KnowledgeExtractor()
-        self.relevance = LayeredRelevanceEngine(self.memory_store)
+        self.relevance = get_relevance_engine(self.memory_store)
     
     def assemble_context(self, project_id: str, task: str, 
                         max_knowledge_items: int = 10,
@@ -331,7 +329,7 @@ class ContextAssembler:
     
     def _get_relevant_files(self, project_id: str, task: str, 
                            limit: int) -> List[Dict[str, Any]]:
-        """Get real files relevant to the task from the project index."""
+        """Get files relevant to the task from the persisted project index."""
         project = self.memory_store.get_project(project_id)
         if not project:
             return []
@@ -341,10 +339,14 @@ class ContextAssembler:
             return []
 
         try:
-            indexer = ProjectIndexer()
-            project_index = indexer.index_project(project_root, project_id)
+            from services.ingestion.index_store import ProjectIndexStore
+            index_store = ProjectIndexStore(self.memory_store)
+            project_index = index_store.get_index_for_context(project_id, project_root)
         except Exception as exc:
-            logger.warning(f"Unable to index project {project_id} for context assembly: {exc}")
+            logger.warning(f"Unable to load project index for {project_id}: {exc}")
+            return []
+
+        if project_index is None:
             return []
 
         keywords = self._extract_keywords(task)
@@ -414,8 +416,11 @@ class ContextAssembler:
     
     def _get_relevant_memory(self, project_id: str, task: str, 
                            limit: int) -> List[Dict[str, Any]]:
-        """Get general relevant memories."""
-        return self.memory_store.search_memories(project_id, task, limit=limit)
+        """Get general relevant memories via unified retrieval."""
+        from packages.context.retrieval import search_project_knowledge
+        return search_project_knowledge(
+            project_id, task, memory_store=self.memory_store, limit=limit
+        )
     
     def _extract_keywords(self, text: str) -> List[str]:
         """Extract keywords from text for search."""

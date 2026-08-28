@@ -31,8 +31,9 @@ class TokenEstimator:
         # In production, we'd want model-specific encoders
     }
     
-    def __init__(self, default_model: str = "gpt-4"):
-        self.default_model = default_model
+    def __init__(self, default_model: Optional[str] = None):
+        from packages.shared.config import get_default_model
+        self.default_model = default_model or get_default_model()
         self._encoders: Dict[str, tiktoken.Encoding] = {}
     
     def _get_encoder(self, model: str) -> tiktoken.Encoding:

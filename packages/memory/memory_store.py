@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +19,19 @@ class MemoryStore:
     
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
-            # Default to data/ directory relative to project root, resolved at runtime
-            project_root = Path(__file__).resolve().parents[2]
-            db_path = str(project_root / "data" / "overhaust_memory.db")
+            from packages.shared.config import get_db_path
+            db_path = get_db_path()
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+
+    def _connect(self):
+        """Open a SQLite connection to this store's database."""
+        return sqlite3.connect(self.db_path)
     
     def _init_db(self):
         """Initialize the SQLite database with required tables."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -97,7 +99,7 @@ class MemoryStore:
         source_hash = self._generate_source_hash(content)
         metadata_json = json.dumps(metadata) if metadata else None
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO memories 
                 (id, project_id, content, memory_type, importance_score, metadata, source_hash)
@@ -110,7 +112,7 @@ class MemoryStore:
     
     def get_memory(self, memory_id: str) -> Optional[Dict]:
         """Retrieve a memory by ID."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT * FROM memories WHERE id = ?
@@ -145,7 +147,7 @@ class MemoryStore:
         Returns:
             List of matching memories
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             
             sql = """
@@ -211,7 +213,7 @@ class MemoryStore:
         updates.append("updated_at = CURRENT_TIMESTAMP")
         params.append(memory_id)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute(f"""
                 UPDATE memories 
                 SET {', '.join(updates)}
@@ -223,14 +225,17 @@ class MemoryStore:
     
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory by ID."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            conn.execute(
+                "DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,)
+            )
             conn.commit()
             return cursor.rowcount > 0
     
     def _update_access(self, memory_id: str):
         """Update access tracking for a memory."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 UPDATE memories 
                 SET accessed_at = CURRENT_TIMESTAMP,
@@ -244,7 +249,7 @@ class MemoryStore:
                            min_importance: float = 0.0,
                            limit: int = 50) -> List[Dict]:
         """Get all memories for a project with optional filtering."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             
             sql = """
@@ -281,7 +286,7 @@ class MemoryStore:
         """Add a new project to the store."""
         metadata_json = json.dumps(metadata) if metadata else None
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO projects 
                 (id, name, description, root_path, metadata)
@@ -293,7 +298,7 @@ class MemoryStore:
     
     def get_project(self, project_id: str) -> Optional[Dict]:
         """Get project information."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
             row = cursor.fetchone()
@@ -310,15 +315,92 @@ class MemoryStore:
     
     def cleanup_stale_memories(self, max_age_days: int = 30) -> int:
         """Remove memories older than max_age_days that aren't permanent or high importance."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.execute("""
                 DELETE FROM memories 
                 WHERE memory_type != 'permanent' 
                 AND importance_score < 0.7
                 AND updated_at < datetime('now', '-' || ? || ' days')
-            """, (str(max_age_days),))  # Fixed: convert int to string for SQL parameter
+            """, (str(max_age_days),))
             conn.commit()
             return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Knowledge extractions (raw extraction archive, linked to memories)
+    # ------------------------------------------------------------------
+
+    def _extraction_id(self, project_id: str, source_ref: str, content: str) -> str:
+        key = f"{project_id}:{source_ref}:{content}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    def extraction_exists(self, project_id: str, source_ref: str, content: str) -> bool:
+        """Check if an extraction record already exists (avoid duplicate archive rows)."""
+        ext_id = self._extraction_id(project_id, source_ref, content)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM knowledge_extractions WHERE id = ?",
+                (ext_id,),
+            ).fetchone()
+            return row is not None
+
+    def add_knowledge_extraction(
+        self,
+        project_id: str,
+        extraction_type: str,
+        source_ref: str,
+        extracted_knowledge: Dict[str, Any],
+        memory_id: Optional[str] = None,
+    ) -> str:
+        """
+        Store a knowledge extraction record.
+
+        source_ref is a provenance pointer (not full source text).
+        extracted_knowledge is structured JSON metadata about the extraction.
+        """
+        content_key = extracted_knowledge.get("content", "")
+        ext_id = self._extraction_id(project_id, source_ref, content_key)
+        payload = dict(extracted_knowledge)
+        if memory_id:
+            payload["memory_id"] = memory_id
+
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO knowledge_extractions
+                (id, project_id, extraction_type, source_content, extracted_knowledge)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                ext_id,
+                project_id,
+                extraction_type,
+                source_ref,
+                json.dumps(payload),
+            ))
+            conn.commit()
+        return ext_id
+
+    def get_extractions(
+        self, project_id: str, extraction_type: Optional[str] = None, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """List knowledge extraction records for a project."""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            sql = "SELECT * FROM knowledge_extractions WHERE project_id = ?"
+            params: List[Any] = [project_id]
+            if extraction_type:
+                sql += " AND extraction_type = ?"
+                params.append(extraction_type)
+            sql += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["extracted_knowledge"] = json.loads(item["extracted_knowledge"])
+            except (json.JSONDecodeError, TypeError):
+                item["extracted_knowledge"] = {}
+            out.append(item)
+        return out
 
 
 # Global memory store instance

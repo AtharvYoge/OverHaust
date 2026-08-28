@@ -154,7 +154,7 @@ class OverhaustAgent:
     def search_project_knowledge(self, project_id: str, query: str, 
                                 limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Search for specific knowledge in a project.
+        Search for specific knowledge in a project via unified retrieval.
         
         Args:
             project_id: ID of the project
@@ -162,9 +162,12 @@ class OverhaustAgent:
             limit: Maximum results to return
             
         Returns:
-            List of matching knowledge items
+            List of matching knowledge items with relevance scores and reasons
         """
-        results = self.memory_store.search_memories(project_id, query, limit=limit)
+        from packages.context.retrieval import search_project_knowledge as unified_search
+        results = unified_search(
+            project_id, query, memory_store=self.memory_store, limit=limit
+        )
         
         self._record_action(
             "search_project_knowledge",

@@ -18,7 +18,7 @@ callers.
 import re
 import math
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Protocol
 
@@ -31,6 +31,7 @@ class ScoredMemory:
     memory: Dict[str, Any]
     score: float
     reasons: List[str]
+    retrieval_methods: List[str] = field(default_factory=list)
 
 
 class RelevanceEngine(Protocol):
@@ -126,7 +127,10 @@ class LayeredRelevanceEngine:
         for mem in pool:
             score, reasons = self._score(mem, q_lower, q_keywords, intent_boosts, now)
             if score > 0.05:
-                scored.append(ScoredMemory(memory=mem, score=round(score, 4), reasons=reasons))
+                scored.append(ScoredMemory(
+                    memory=mem, score=round(score, 4), reasons=reasons,
+                    retrieval_methods=["keyword"],
+                ))
 
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[:limit]
@@ -232,8 +236,9 @@ def search_knowledge(project_id: str, query: str, memory_store=None,
                      limit: int = 10) -> List[ScoredMemory]:
     """Module-level convenience: the single retrieval entry point."""
     if engine is None:
+        from packages.context.retrieval import get_relevance_engine
         if memory_store is None:
             from packages.memory.memory_store import get_memory_store
             memory_store = get_memory_store()
-        engine = LayeredRelevanceEngine(memory_store)
+        engine = get_relevance_engine(memory_store)
     return engine.search(project_id, query, limit=limit)

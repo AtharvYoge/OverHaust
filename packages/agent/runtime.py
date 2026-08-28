@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from packages.agent.autonomous_agent import OverhaustAgent
-from packages.context.relevance import LayeredRelevanceEngine
+from packages.context.retrieval import get_relevance_engine
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class AgentRuntime:
 
     def __init__(self, agent: OverhaustAgent):
         self.agent = agent
-        self.relevance = LayeredRelevanceEngine(agent.memory_store)
+        self.relevance = get_relevance_engine(agent.memory_store)
 
     def run(self, project_id: str, task: str,
             max_knowledge_items: int = 10,

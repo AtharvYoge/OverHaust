@@ -167,12 +167,12 @@ class OverhaustMCPServer:
     def __init__(self, memory_store=None):
         from packages.memory.memory_store import get_memory_store
         from packages.agent.autonomous_agent import OverhaustAgent
-        from packages.context.relevance import LayeredRelevanceEngine
+        from packages.context.retrieval import get_relevance_engine
         from packages.tokenization.token_estimator import TokenEstimator
 
         self.store = memory_store or get_memory_store()
         self.agent = OverhaustAgent("mcp-agent", memory_store=self.store)
-        self.relevance = LayeredRelevanceEngine(self.store)
+        self.relevance = get_relevance_engine(self.store)
         self.estimator = TokenEstimator()
         self.server = Server("overhaust", on_list_tools=self._list_tools,
                              on_call_tool=self._call_tool)
@@ -215,15 +215,19 @@ class OverhaustMCPServer:
         return _ok({"memory_id": mid})
 
     def _tool_search_memory(self, args: Dict[str, Any]):
-        results = self.relevance.search(args["project_id"], args["query"],
-                                        limit=int(args.get("limit", 10)))
+        from packages.context.retrieval import search_project_knowledge
+        results = search_project_knowledge(
+            args["project_id"], args["query"],
+            memory_store=self.store, limit=int(args.get("limit", 10)),
+        )
         return _ok({"results": [
-            {"memory_id": sm.memory["id"], "content": sm.memory["content"],
-             "score": sm.score, "reasons": sm.reasons,
-             "memory_type": sm.memory.get("memory_type"),
-             "importance": sm.memory.get("importance_score"),
-             "provenance": (sm.memory.get("metadata") or {}).get("provenance")}
-            for sm in results
+            {"memory_id": r["id"], "content": r["content"],
+             "score": r.get("score"), "reasons": r.get("reasons"),
+             "retrieval_methods": r.get("retrieval_methods", ["keyword"]),
+             "memory_type": r.get("memory_type"),
+             "importance": r.get("importance_score"),
+             "provenance": (r.get("metadata") or {}).get("provenance")}
+            for r in results
         ]})
 
     _tool_search_project_knowledge = _tool_search_memory

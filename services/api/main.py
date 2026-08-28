@@ -11,9 +11,11 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from datetime import datetime, timezone
 import uvicorn
 import logging
 
+from packages.shared.config import get_allowed_origins, get_api_host, get_api_port
 from packages.agent.autonomous_agent import get_overhaust_agent, OverhaustAgent
 from packages.memory.memory_store import get_memory_store, MemoryStore
 from packages.context.context_engine import get_context_assembler, ContextAssembler
@@ -30,15 +32,10 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# Add CORS middleware - restrict to known local dev origins
+# Add CORS middleware - origins from OVERHAUST_ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
@@ -109,7 +106,10 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": "2026-08-17T13:00:00Z"}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 @app.post("/api/v1/understand-task")
 async def understand_task(
@@ -237,7 +237,8 @@ async def search_knowledge(
         )
         return {
             "results": results,
-            "count": len(results)
+            "count": len(results),
+            "scored": True,
         }
     except Exception as e:
         logger.error(f"Error searching knowledge: {e}")
@@ -388,6 +389,8 @@ async def get_project(
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting project: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -433,13 +436,30 @@ async def ingest_conversation(
 class IndexProjectRequest(BaseModel):
     project_id: str
     root_path: str
+    force_full: Optional[bool] = False
 
 @app.post("/api/v1/index-project")
-async def index_project(request: IndexProjectRequest):
-    """Index an authorized project directory: files, symbols, imports, dependencies."""
+async def index_project(
+    request: IndexProjectRequest,
+    memory_store: MemoryStore = Depends(get_memory_store_dep),
+):
+    """Index an authorized project directory with persistent incremental storage."""
     try:
-        from services.ingestion.project_indexer import ProjectIndexer, PathSecurityError
-        idx = ProjectIndexer().index_project(request.root_path, request.project_id)
+        from services.ingestion.index_store import ProjectIndexStore
+        from services.ingestion.project_indexer import PathSecurityError
+        project = memory_store.get_project(request.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        store = ProjectIndexStore(memory_store)
+        idx, sync = store.sync_project(
+            request.project_id, request.root_path, force_full=request.force_full or False
+        )
+        memory_store.add_project(
+            request.project_id,
+            project["name"],
+            project.get("description", "") or "",
+            request.root_path,
+        )
         return {
             "project_id": idx.project_id,
             "root_path": idx.root_path,
@@ -448,9 +468,12 @@ async def index_project(request: IndexProjectRequest):
             "estimated": True,
             "stats": idx.stats,
             "indexed_at": idx.indexed_at,
+            "sync": sync,
         }
     except PathSecurityError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Indexing failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -471,4 +494,4 @@ async def list_connections():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=get_api_host(), port=get_api_port())
