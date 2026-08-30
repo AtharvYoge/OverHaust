@@ -1,4 +1,7 @@
+import { BackendStatus } from "../components/BackendStatus";
 import { PageContent } from "../components/layout/PageLayout";
+import { BACKEND_BASE_URL } from "../config/backend";
+import type { BackendHealthStatus } from "../hooks/useBackendHealth";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
 import "./pages.css";
@@ -17,7 +20,13 @@ function Toggle({ on, label }: { on: boolean; label: string }) {
   );
 }
 
-export function SettingsPage() {
+export function SettingsPage({
+  backendStatus,
+  onBackendRetry,
+}: {
+  backendStatus: BackendHealthStatus;
+  onBackendRetry: () => void;
+}) {
   return (
     <PageContent narrow>
       <Card padding="lg" elevated>
@@ -60,10 +69,13 @@ export function SettingsPage() {
           <p className="settings-section__description">
             Connection to the local OverHaust Python API.
           </p>
+          <div className="settings-backend-status">
+            <BackendStatus status={backendStatus} onRetry={onBackendRetry} />
+          </div>
           <Input
             label="API base URL"
-            defaultValue="http://localhost:8000"
-            hint="Backend connectivity arrives in a later phase."
+            defaultValue={BACKEND_BASE_URL}
+            hint="Health checks use GET /health on this host."
             readOnly
           />
           <div className="settings-row">

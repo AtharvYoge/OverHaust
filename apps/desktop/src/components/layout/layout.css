@@ -58,6 +58,9 @@
 .sidebar__footer {
   margin-top: auto;
   padding-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
 .sidebar__divider {
@@ -132,6 +135,19 @@
 
   .sidebar__new-btn .ui-btn__icon {
     margin: 0;
+  }
+
+  .sidebar__footer .backend-status:not(.backend-status--compact) .backend-status__text {
+    display: none;
+  }
+
+  .sidebar__footer .backend-status {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+
+  .sidebar__footer .backend-status__indicator {
+    margin-top: 0;
   }
 
   .nav-item span:not(.nav-item__icon) {
