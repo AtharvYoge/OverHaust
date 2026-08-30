@@ -153,6 +153,49 @@ def test_incremental_diff_and_apply():
         print(f"  index updated: {len(idx1.files)} -> {len(idx2.files)} files")
 
 
+def test_dart_symbol_extraction():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "lib" / "services").mkdir(parents=True)
+        (root / "lib" / "services" / "kitchen.dart").write_text(
+            "class KitchenPrintService {\n"
+            "  String buildKotText(String orderId) {\n"
+            "    return orderId;\n"
+            "  }\n"
+            "}\n"
+            "Future<void> addOrder(String id) async {}\n"
+        )
+        idx = ProjectIndexer().index_project(str(root), "dart-proj")
+        f = next(x for x in idx.files if x.path == "lib/services/kitchen.dart")
+        names = {s.name: (s.kind, s.exported) for s in f.symbols}
+        assert "KitchenPrintService" in names
+        assert names["KitchenPrintService"][1] is True
+        assert "buildKotText" in names
+        assert "addOrder" in names
+
+
+def test_dart_private_helper_extraction():
+    """Private helper: multiline signature, non-Future/void return, brace on a later line."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "lib").mkdir()
+        (root / "lib" / "ticket_service.dart").write_text(
+            "class TicketService {\n"
+            "  bool _enqueuePrintForLatest({\n"
+            "    required String id,\n"
+            "    void Function()? onDone,\n"
+            "  })\n"
+            "  {\n"
+            "    return id.isNotEmpty;\n"
+            "  }\n"
+            "}\n"
+        )
+        idx = ProjectIndexer().index_project(str(root), "dart-priv")
+        f = next(x for x in idx.files if x.path.endswith("ticket_service.dart"))
+        names = {s.name: s.kind for s in f.symbols}
+        assert names.get("_enqueuePrintForLatest") == "function"
+
+
 if __name__ == "__main__":
     print("Running project ingestion tests...\n")
     test_index_basic_tree()

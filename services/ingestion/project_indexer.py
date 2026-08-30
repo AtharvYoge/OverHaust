@@ -88,6 +88,18 @@ _PATTERNS = {
         re.compile(r'^\s*(?:export\s+)?(?:async\s+)?def\s+([A-Za-z_][\w]*)', re.M),
         re.compile(r'^\s*(?:public|private|protected|static|\s)*[\w<>\[\]]+\s+([a-z][\w]*)\s*\([^)]*\)\s*(?:\{|throws)', re.M),  # java-ish
         re.compile(r'^\s*func\s+(?:\(\w+\s+[\w\[\]*]+\)\s+)?([A-Za-z_][\w]*)\s*\(', re.M),  # go
+        # Dart methods: private `_` names, any return type, `{` may be on a later line.
+        # Match only through `(` so nested Function()/named-param parens cannot hide
+        # the definition. Do not assume Future/void. `async` may sit between `)` and `{`.
+        # The java-ish pattern misses `_foo` (`[a-z]` only) and `) async {`.
+        re.compile(
+            r'^\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*'
+            r'(?:(?:abstract|static|external|factory)\s+)*'
+            r'(?:[\w<>,\[\]?.]+\s+)+'
+            r'([a-z_][\w]*)\s*'
+            r'(?:<[^>(]*>\s*)?\(',
+            re.M,
+        ),
     ],
     'class': [
         re.compile(r'^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)', re.M),
@@ -102,7 +114,19 @@ _PATTERNS = {
     'enum': [
         re.compile(r'^\s*(?:export\s+)?enum\s+([A-Za-z_$][\w$]*)', re.M),
     ],
+    'platform_channel': [
+        re.compile(
+            r"(?:MethodChannel|EventChannel|BasicMessageChannel)\(\s*['\"]([^'\"]+)['\"]",
+            re.M,
+        ),
+    ],
 }
+
+_DART_EXPORT_PATTERN = re.compile(r"^\s*export\s+['\"]([^'\"]+)['\"]", re.M)
+_DART_INVOKE_METHOD = re.compile(
+    r"\.invokeMethod(?:<[^>]+>)?\(\s*['\"]([^'\"]+)['\"]",
+    re.M,
+)
 
 _IMPORT_PATTERNS = [
     re.compile(r'^\s*import\s+(?:[\w*{}\s,]+\s+from\s+)?[\'"]([^\'"]+)[\'"]', re.M),       # js/ts
@@ -131,8 +155,57 @@ def _line_of(text: str, pos: int) -> int:
     return text.count('\n', 0, pos) + 1
 
 
+_DART_STMT_PREFIXES = (
+    "return ", "await ", "throw ", "yield ", "if ", "for ", "while ",
+    "switch ", "case ", "else ", "catch ", "assert ",
+)
+
+
+def _is_dart_statement_match(text: str, pos: int) -> bool:
+    """Skip call-site lines that look like `await foo(` / `return foo(`."""
+    end = text.find("\n", pos)
+    if end == -1:
+        end = len(text)
+    line = text[pos:end].lstrip()
+    return line.startswith(_DART_STMT_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Extractor versioning
+# ---------------------------------------------------------------------------
+# A persisted index is only as good as the extractor that produced it. Because
+# incremental sync compares file *content* hashes, changing extraction logic
+# alone leaves every file "unchanged" and silently preserves stale symbols.
+# Fingerprinting the extraction rules makes that staleness detectable, so a
+# pattern edit forces a full re-extraction without anyone remembering to.
+_EXTRACTOR_REVISION = "2"
+
+
+def _compute_extractor_fingerprint() -> str:
+    """Stable short hash of every rule that influences symbol/import output."""
+    parts: List[str] = [f"rev:{_EXTRACTOR_REVISION}"]
+    for kind in sorted(_PATTERNS):
+        for pat in _PATTERNS[kind]:
+            parts.append(f"symbol:{kind}:{pat.pattern}")
+    for pat in _IMPORT_PATTERNS:
+        parts.append(f"import:{pat.pattern}")
+    for pat in _EXPORT_PATTERNS:
+        parts.append(f"export:{pat.pattern}")
+    parts.append(f"dart_invoke:{_DART_INVOKE_METHOD.pattern}")
+    parts.append(f"dart_export:{_DART_EXPORT_PATTERN.pattern}")
+    parts.append("dart_stmt:" + "|".join(_DART_STMT_PREFIXES))
+    digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    return f"{_EXTRACTOR_REVISION}:{digest[:16]}"
+
+
+#: Identifies the extraction rules a persisted index was built with. Bump
+#: ``_EXTRACTOR_REVISION`` for extractor changes that are not regex edits.
+INDEX_EXTRACTOR_VERSION = _compute_extractor_fingerprint()
+
+
 def _extract_symbols(text: str, file_path: str) -> List[Symbol]:
     symbols: List[Symbol] = []
+    is_dart = file_path.endswith('.dart')
     exported_names: Set[str] = set()
     for pat in _EXPORT_PATTERNS:
         for m in pat.finditer(text):
@@ -144,20 +217,39 @@ def _extract_symbols(text: str, file_path: str) -> List[Symbol]:
         for pat in pats:
             for m in pat.finditer(text):
                 name = m.group(1)
+                if is_dart and kind == "function" and _is_dart_statement_match(text, m.start()):
+                    continue
+                if kind == 'platform_channel':
+                    display = f"channel:{name}"
+                else:
+                    display = name
+                exported = name in exported_names
+                if is_dart and kind in ('class', 'enum', 'function') and not exported:
+                    exported = True
                 symbols.append(Symbol(
-                    name=name, kind=kind, file_path=file_path,
+                    name=display, kind=kind, file_path=file_path,
                     line=_line_of(text, m.start()),
-                    exported=name in exported_names,
+                    exported=exported,
                 ))
-    # dedupe by (name, kind)
-    seen = set()
-    out = []
+    if is_dart:
+        for m in _DART_INVOKE_METHOD.finditer(text):
+            method = m.group(1)
+            symbols.append(Symbol(
+                name=f"invoke:{method}",
+                kind='platform_channel',
+                file_path=file_path,
+                line=_line_of(text, m.start()),
+                exported=True,
+            ))
+    # Dedup by (name, kind), keeping the earliest line so a later false
+    # match cannot replace a definition that appears first in the file.
+    best = {}
     for s in symbols:
         key = (s.name, s.kind)
-        if key not in seen:
-            seen.add(key)
-            out.append(s)
-    return out
+        prev = best.get(key)
+        if prev is None or s.line < prev.line:
+            best[key] = s
+    return list(best.values())
 
 
 def _extract_imports(text: str) -> List[str]:
@@ -167,6 +259,8 @@ def _extract_imports(text: str) -> List[str]:
             for g in m.groups():
                 if g:
                     found.add(g.strip())
+    for m in _DART_EXPORT_PATTERN.finditer(text):
+        found.add(m.group(1).strip())
     return sorted(found)
 
 
