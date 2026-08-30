@@ -397,11 +397,14 @@ class ConversationIngestor:
                 'knowledge_type': mem.category,
                 'source_type': mem.source_type,
                 'source_id': mem.conversation_id,
+                'source_ref': source_ref,
                 'provenance': mem.provenance,
                 'message_index': mem.message_index,
                 'role': mem.role,
                 'confidence': mem.confidence,
                 'status': mem.status,
+                'version': 1,
+                'authority': 'ingestion',
                 **mem.metadata,
             }
             mem_id = memory_store.add_memory(

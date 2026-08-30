@@ -8,7 +8,7 @@ are shared.
 Tools:
   get_project_context, search_project_knowledge, search_memory,
   get_relevant_context, remember, update_memory, estimate_context,
-  build_context, create_project
+  build_context, create_project, trace_code_flow
 """
 
 import asyncio
@@ -52,6 +52,7 @@ TOOL_DEFS = [
                 "memory_type": {"type": "string", "enum": ["permanent", "temporary", "task", "resolved", "stale"], "default": "temporary"},
                 "importance": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
                 "knowledge_type": _json_schema_string("Optional category: decision | permanent_knowledge | open_issue | current_task | resolved_issue | stale_info"),
+                "supersedes_memory_id": _json_schema_string("Optional memory ID to supersede with this new knowledge"),
             },
             "required": ["project_id", "content"],
         },
@@ -118,6 +119,19 @@ TOOL_DEFS = [
                 "task": _json_schema_string("The current task/question"),
             },
             "required": ["project_id", "task"],
+        },
+    ),
+    types.Tool(
+        name="trace_code_flow",
+        description="Trace a short ordered code-flow evidence path (file/symbol steps with relevance and trust).",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "project_id": _json_schema_string("Project to trace"),
+                "query": _json_schema_string("Flow question, e.g. where is KOT generated"),
+                "max_steps": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6},
+            },
+            "required": ["project_id", "query"],
         },
     ),
     types.Tool(
@@ -200,15 +214,30 @@ class OverhaustMCPServer:
         return _ok({"project_id": pid, "message": "project created"})
 
     def _tool_remember(self, args: Dict[str, Any]):
-        meta = {}
+        if args.get("supersedes_memory_id"):
+            try:
+                mid = self.agent.supersede_knowledge(
+                    args["project_id"],
+                    args["supersedes_memory_id"],
+                    args["content"],
+                    confidence=args.get("confidence"),
+                    knowledge_type=args.get("knowledge_type"),
+                )
+            except ValueError as e:
+                return _err(str(e))
+            return _ok({"memory_id": mid, "superseded": args["supersedes_memory_id"]})
+
+        meta = {"authority": "user", "source_type": "user", "version": 1}
         if args.get("knowledge_type"):
             meta["knowledge_type"] = args["knowledge_type"]
+        if args.get("confidence") is not None:
+            meta["confidence"] = float(args["confidence"])
         try:
             mid = self.store.add_memory(
                 args["project_id"], args["content"],
                 memory_type=args.get("memory_type", "temporary"),
                 importance_score=float(args.get("importance", 0.5)),
-                metadata=meta or None,
+                metadata=meta,
             )
         except ValueError as e:
             return _err(str(e))
@@ -223,14 +252,27 @@ class OverhaustMCPServer:
         return _ok({"results": [
             {"memory_id": r["id"], "content": r["content"],
              "score": r.get("score"), "reasons": r.get("reasons"),
+             "trust_score": r.get("trust_score"),
              "retrieval_methods": r.get("retrieval_methods", ["keyword"]),
              "memory_type": r.get("memory_type"),
              "importance": r.get("importance_score"),
-             "provenance": (r.get("metadata") or {}).get("provenance")}
+             "provenance": r.get("provenance"),
+             "trust": (r.get("metadata") or {}).get("trust")}
             for r in results
         ]})
 
     _tool_search_project_knowledge = _tool_search_memory
+
+    def _tool_trace_code_flow(self, args: Dict[str, Any]):
+        from packages.context.retrieval import trace_code_flow
+        max_steps = args.get("max_steps")
+        result = trace_code_flow(
+            args["project_id"],
+            args["query"],
+            memory_store=self.store,
+            max_steps=int(max_steps) if max_steps is not None else None,
+        )
+        return _ok(result)
 
     def _tool_build_context(self, args: Dict[str, Any]):
         try:
@@ -246,11 +288,15 @@ class OverhaustMCPServer:
             "knowledge": [
                 {"content": k.content, "type": k.knowledge_type,
                  "importance": k.importance_score,
-                 "relevance": (k.metadata or {}).get("relevance")}
+                 "relevance": (k.metadata or {}).get("relevance"),
+                 "trust": (k.metadata or {}).get("trust"),
+                 "provenance": (k.metadata or {}).get("provenance")}
                 for k in ctx.relevant_knowledge
             ],
             "decisions": [d.content for d in ctx.relevant_decisions],
             "constraints": ctx.constraints,
+            "insufficient_evidence": ctx.insufficient_evidence,
+            "evidence_note": ctx.evidence_note,
         })
 
     _tool_get_project_context = _tool_build_context

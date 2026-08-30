@@ -54,9 +54,12 @@ From the repository root:
 ```bash
 python3 -m pytest -v
 python3 -m tests.evaluation.retrieval_benchmark   # Phase 2B paraphrase benchmark
+python3 -m tests.evaluation.trust_evaluation      # Phase 2C trust scenarios
 ```
 
-This runs unit tests for memory, context, agent, ingestion, MCP, connections, and evaluation scenarios.
+This runs unit tests for memory, context, agent, ingestion, knowledge trust, MCP, connections, and evaluation scenarios.
+
+**Trust configuration:** `OVERHAUST_TRUST_MIN` (default `0.3`) controls trust filtering; see `PHASE_2C_IMPLEMENTATION.md`.
 
 ### Frontend
 

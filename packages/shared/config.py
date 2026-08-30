@@ -74,8 +74,87 @@ def get_hybrid_weights() -> dict:
             return default
 
     return {
-        "keyword": _f("OVERHAUST_HYBRID_KEYWORD_WEIGHT", 0.50),
-        "semantic": _f("OVERHAUST_HYBRID_SEMANTIC_WEIGHT", 0.35),
-        "confidence": _f("OVERHAUST_HYBRID_CONFIDENCE_WEIGHT", 0.10),
+        "keyword": _f("OVERHAUST_HYBRID_KEYWORD_WEIGHT", 0.55),
+        "semantic": _f("OVERHAUST_HYBRID_SEMANTIC_WEIGHT", 0.40),
         "freshness": _f("OVERHAUST_HYBRID_FRESHNESS_WEIGHT", 0.05),
     }
+
+
+def get_trust_min() -> float:
+    """Minimum trust threshold for filtering (sole evidence may override)."""
+    raw = os.getenv("OVERHAUST_TRUST_MIN", "0.3")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.3
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def get_index_search_limit() -> int:
+    """Max index file/symbol hits per query."""
+    return _int_env("OVERHAUST_INDEX_SEARCH_LIMIT", 8)
+
+
+def get_index_snippet_max_lines() -> int:
+    """Max lines read from disk when building file context."""
+    return _int_env("OVERHAUST_INDEX_SNIPPET_MAX_LINES", 60)
+
+
+def get_index_snippet_max_chars() -> int:
+    """Max characters per file snippet in context."""
+    return _int_env("OVERHAUST_INDEX_SNIPPET_MAX_CHARS", 8000)
+
+
+def get_index_semantic_batch_size() -> int:
+    """Batch size for index embedding generation."""
+    return _int_env("OVERHAUST_INDEX_SEMANTIC_BATCH_SIZE", 32)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def get_flow_seed_search_limit() -> int:
+    """Max index hits considered for code-flow seed selection."""
+    return _int_env("OVERHAUST_FLOW_SEED_SEARCH_LIMIT", 36)
+
+
+def get_flow_beam_width() -> int:
+    """Number of partial paths retained during code-flow beam search."""
+    return _int_env("OVERHAUST_FLOW_BEAM_WIDTH", 4)
+
+
+def get_flow_max_steps() -> int:
+    """Max steps in a code-flow evidence path."""
+    return _int_env("OVERHAUST_FLOW_MAX_STEPS", 6)
+
+
+def get_flow_min_relevance() -> float:
+    """Stop code-flow expansion when neighbor relevance drops below this (0–1)."""
+    return _float_env("OVERHAUST_FLOW_MIN_RELEVANCE", 0.12)
+
+
+def flow_read_calls_enabled() -> bool:
+    """Whether to detect call edges by reading source files from disk."""
+    return os.getenv("OVERHAUST_FLOW_READ_CALLS", "1").strip().lower() in ("1", "true", "yes")
+
+
+def get_index_weak_kw_threshold() -> float:
+    """Raw keyword score below which hybrid retrieval favors semantic."""
+    return _float_env("OVERHAUST_INDEX_WEAK_KW_THRESHOLD", 2.5)
+
+
+def get_index_generic_penalty() -> float:
+    """Score multiplier for generic boilerplate symbol/path hits."""
+    return _float_env("OVERHAUST_INDEX_GENERIC_PENALTY", 0.15)

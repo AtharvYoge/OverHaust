@@ -100,6 +100,63 @@ def test_estimate_and_update():
         os.unlink(db)
 
 
+def test_remember_supersedes():
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as t:
+        db = t.name
+    try:
+        srv, store = make_server(db)
+        srv._tool_create_project({"project_id": "sup", "name": "Sup"})
+        r1 = srv._tool_remember({"project_id": "sup", "content": "We use Firebase Auth",
+                                  "knowledge_type": "decision"})
+        old_id = payload(r1)["memory_id"]
+        r2 = srv._tool_remember({
+            "project_id": "sup",
+            "content": "We use Auth0",
+            "supersedes_memory_id": old_id,
+            "knowledge_type": "decision",
+        })
+        p2 = payload(r2)
+        assert p2["superseded"] == old_id
+        old = store.get_memory(old_id)
+        assert old["metadata"]["status"] == "superseded"
+        print("✓ remember with supersede works")
+    finally:
+        os.unlink(db)
+
+
+def test_trace_code_flow_tool():
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from packages.retrieval.test_code_flow import make_kot_flow_tree
+
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as t:
+        db = t.name
+    tmp = tempfile.mkdtemp()
+    try:
+        root = Path(tmp)
+        make_kot_flow_tree(root)
+        srv, store = make_server(db)
+        store.add_project("flow-mcp", "Flow MCP", "", str(root))
+        from services.ingestion.index_store import ProjectIndexStore
+        ProjectIndexStore(store).sync_project("flow-mcp", str(root))
+
+        r = srv._tool_trace_code_flow({
+            "project_id": "flow-mcp",
+            "query": "Where is the KOT generated?",
+            "max_steps": 6,
+        })
+        body = payload(r)
+        assert body["steps"]
+        assert "generateKOT" in body["summary"] or any(
+            s.get("symbol") == "generateKOT" for s in body["steps"]
+        )
+        print("✓ trace_code_flow tool works")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.unlink(db)
+
+
 def test_unknown_tool_error():
     srv, _ = make_server(":memory:") if False else (None, None)
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as t:
@@ -180,6 +237,8 @@ if __name__ == "__main__":
     test_remember_rejects_ghost_project()
     test_search_and_build_context()
     test_estimate_and_update()
+    test_remember_supersedes()
+    test_trace_code_flow_tool()
     test_unknown_tool_error()
     test_stdio_roundtrip()
     print("\n✓ All MCP server tests passed!")

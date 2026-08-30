@@ -63,6 +63,12 @@ class SearchRequest(BaseModel):
     query: str
     limit: Optional[int] = 10
 
+
+class TraceCodeFlowRequest(BaseModel):
+    project_id: str
+    query: str
+    max_steps: Optional[int] = None
+
 class TokenEstimationRequest(BaseModel):
     text: str
     model: Optional[str] = "gpt-4"
@@ -183,7 +189,9 @@ async def get_context(
             "relevant_memory": context.relevant_memory,
             "constraints": context.constraints,
             "created_at": context.created_at,
-            "estimated_tokens": context.estimated_tokens
+            "estimated_tokens": context.estimated_tokens,
+            "insufficient_evidence": context.insufficient_evidence,
+            "evidence_note": context.evidence_note,
         }
     except ValueError as e:
         logger.error(f"Project not found: {e}")
@@ -244,6 +252,28 @@ async def search_knowledge(
         logger.error(f"Error searching knowledge: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/v1/trace-code-flow")
+async def trace_code_flow(
+    request: TraceCodeFlowRequest,
+    agent: OverhaustAgent = Depends(get_agent),
+):
+    """Trace a short ordered code-flow evidence path for a project question."""
+    try:
+        if len(request.query) > MAX_QUERY_LENGTH:
+            raise HTTPException(status_code=413, detail="Query exceeds maximum length")
+        return agent.trace_code_flow(
+            request.project_id,
+            request.query,
+            max_steps=request.max_steps,
+        )
+    except ValueError as e:
+        logger.error(f"Project not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error tracing code flow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 class MarkResolvedRequest(BaseModel):
     project_id: str
     issue_description: str
@@ -251,6 +281,13 @@ class MarkResolvedRequest(BaseModel):
 class MarkStaleRequest(BaseModel):
     memory_id: str
     reason: Optional[str] = ""
+
+class SupersedeKnowledgeRequest(BaseModel):
+    project_id: str
+    supersedes_memory_id: str
+    content: str
+    confidence: Optional[float] = None
+    provenance: Optional[str] = None
 
 @app.post("/api/v1/mark-resolved")
 async def mark_resolved(
@@ -284,6 +321,36 @@ async def mark_stale(
         raise
     except Exception as e:
         logger.error(f"Error marking stale: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/supersede-knowledge")
+async def supersede_knowledge(
+    request: SupersedeKnowledgeRequest,
+    agent: OverhaustAgent = Depends(get_agent),
+):
+    """Replace older knowledge with newer content while preserving history."""
+    try:
+        if len(request.content) > MAX_CONTENT_LENGTH:
+            raise HTTPException(status_code=413, detail="Content exceeds maximum length")
+        new_id = agent.supersede_knowledge(
+            request.project_id,
+            request.supersedes_memory_id,
+            request.content,
+            confidence=request.confidence,
+            provenance=request.provenance,
+        )
+        return {
+            "memory_id": new_id,
+            "supersedes_memory_id": request.supersedes_memory_id,
+            "message": "Knowledge superseded successfully",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error superseding knowledge: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/estimate-tokens")

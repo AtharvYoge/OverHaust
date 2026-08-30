@@ -20,6 +20,8 @@ def test_null_provider_unavailable():
 
 def test_get_embedding_provider_disabled():
     os.environ["OVERHAUST_EMBEDDINGS"] = "0"
+    from packages.retrieval.embeddings import reset_embedding_provider
+    reset_embedding_provider()
     p = get_embedding_provider()
     assert not p.is_available
 
@@ -27,8 +29,10 @@ def test_get_embedding_provider_disabled():
 def test_fastembed_provider_optional():
     """Runs only when fastembed installed and embeddings enabled."""
     import pytest
+    from packages.retrieval.embeddings import reset_embedding_provider
     pytest.importorskip("fastembed")
     os.environ["OVERHAUST_EMBEDDINGS"] = "1"
+    reset_embedding_provider()
     p = get_embedding_provider()
     if not p.is_available:
         pytest.skip("fastembed model could not load")

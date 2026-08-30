@@ -4,7 +4,7 @@ Embedding provider abstraction for Overhaust hybrid retrieval.
 Local-first: fastembed when OVERHAUST_EMBEDDINGS=1, no API keys required.
 """
 
-from typing import List, Protocol, runtime_checkable
+from typing import List, Protocol, runtime_checkable, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -90,10 +90,29 @@ class FastEmbedProvider:
         return vecs[0] if vecs else []
 
 
+_provider_cache: Optional[EmbeddingProvider] = None
+_provider_cache_key: Optional[tuple] = None
+
+
 def get_embedding_provider() -> EmbeddingProvider:
-    """Return the configured embedding provider."""
+    """Return the configured embedding provider (singleton per process)."""
     from packages.shared.config import embeddings_enabled, get_embedding_model
 
+    key = (embeddings_enabled(), get_embedding_model())
+    global _provider_cache, _provider_cache_key
+    if _provider_cache is not None and _provider_cache_key == key:
+        return _provider_cache
+
     if not embeddings_enabled():
-        return NullEmbeddingProvider()
-    return FastEmbedProvider(get_embedding_model())
+        _provider_cache = NullEmbeddingProvider()
+    else:
+        _provider_cache = FastEmbedProvider(get_embedding_model())
+    _provider_cache_key = key
+    return _provider_cache
+
+
+def reset_embedding_provider() -> None:
+    """Clear cached provider (for tests)."""
+    global _provider_cache, _provider_cache_key
+    _provider_cache = None
+    _provider_cache_key = None

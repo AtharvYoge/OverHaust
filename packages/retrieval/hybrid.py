@@ -83,14 +83,11 @@ class HybridRelevanceEngine:
 
         for entry in merged.values():
             mem = entry["memory"]
-            meta = mem.get("metadata") or {}
-            confidence = float(meta.get("confidence", 0.5))
             freshness = self._freshness_factor(mem, now)
 
             final = (
                 w["keyword"] * entry["kw_norm"]
                 + w["semantic"] * entry["sem_score"]
-                + w["confidence"] * confidence
                 + w["freshness"] * freshness
             )
 
@@ -99,8 +96,6 @@ class HybridRelevanceEngine:
                 reasons.extend(entry["kw_reasons"])
             if entry["sem_score"] > 0:
                 reasons.extend(entry["sem_reasons"])
-            if confidence != 0.5:
-                reasons.append(f"confidence {confidence}")
             reasons.append(f"freshness {freshness:.2f}")
 
             if final > 0.05:

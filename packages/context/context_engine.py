@@ -44,6 +44,8 @@ class ContextPackage:
     constraints: List[str]
     created_at: str
     estimated_tokens: int
+    insufficient_evidence: bool = False
+    evidence_note: str = ""
 
 
 class KnowledgeExtractor:
@@ -216,12 +218,15 @@ class ContextAssembler:
     def __init__(self, memory_store=None, token_estimator=None):
         from packages.memory.memory_store import get_memory_store
         from packages.tokenization.token_estimator import TokenEstimator
-        from packages.context.retrieval import get_relevance_engine
+        from packages.context.retrieval import get_relevance_engine, search_project_knowledge_scored
+        from packages.knowledge.abstention import assess_evidence
 
         self.memory_store = memory_store or get_memory_store()
         self.token_estimator = token_estimator or TokenEstimator()
         self.knowledge_extractor = KnowledgeExtractor()
         self.relevance = get_relevance_engine(self.memory_store)
+        self._search_scored = search_project_knowledge_scored
+        self._assess_evidence = assess_evidence
     
     def assemble_context(self, project_id: str, task: str, 
                         max_knowledge_items: int = 10,
@@ -243,10 +248,10 @@ class ContextAssembler:
         if not project:
             raise ValueError(f"Project {project_id} not found")
         
-        # Get relevant memories/knowledge
-        relevant_knowledge = self._get_relevant_knowledge(
-            project_id, task, max_knowledge_items
-        )
+        # Get relevant memories/knowledge (trust-filtered)
+        scored = self._search_scored(project_id, task, memory_store=self.memory_store, limit=max_knowledge_items)
+        evidence = self._assess_evidence(scored, task)
+        relevant_knowledge = self._scored_to_knowledge(scored)
         
         # Get relevant files (placeholder - would integrate with file system)
         relevant_files = self._get_relevant_files(project_id, task, max_files)
@@ -294,23 +299,28 @@ class ContextAssembler:
             relevant_memory=relevant_memory,
             constraints=constraints,
             created_at=datetime.now().isoformat(),
-            estimated_tokens=estimated_tokens
+            estimated_tokens=estimated_tokens,
+            insufficient_evidence=evidence.get("insufficient_evidence", False),
+            evidence_note=evidence.get("evidence_note", ""),
         )
         
         logger.info(f"Assembled context package {context_id} for project {project_id}")
         return context_package
     
-    def _get_relevant_knowledge(self, project_id: str, task: str,
-                               limit: int) -> List[ExtractedKnowledge]:
-        """Get knowledge relevant to the task via the layered relevance engine.
-        Returns items ranked by relevance score with explanations attached
-        in metadata['relevance']."""
-        scored = self.relevance.search(project_id, task, limit=limit)
+    def _scored_to_knowledge(self, scored) -> List[ExtractedKnowledge]:
+        """Convert trust-filtered ScoredMemory list to ExtractedKnowledge."""
         items: List[ExtractedKnowledge] = []
         for sm in scored:
             mem = sm.memory
             meta = dict(mem.get('metadata') or {})
             meta['relevance'] = {'score': sm.score, 'reasons': sm.reasons}
+            meta['trust'] = {
+                'score': sm.trust_score,
+                'status': sm.trust_status,
+                'confidence': meta.get('confidence'),
+                'reasons': list(sm.trust_reasons),
+            }
+            meta['provenance'] = sm.provenance_display or meta.get('provenance', '')
             knowledge = ExtractedKnowledge(
                 id=mem['id'],
                 project_id=mem['project_id'],
@@ -326,67 +336,71 @@ class ContextAssembler:
             )
             items.append(knowledge)
         return items
+
+    def _get_relevant_knowledge(self, project_id: str, task: str,
+                               limit: int) -> List[ExtractedKnowledge]:
+        """Get knowledge relevant to the task via trust-filtered retrieval."""
+        scored = self._search_scored(project_id, task, memory_store=self.memory_store, limit=limit)
+        return self._scored_to_knowledge(scored)
     
-    def _get_relevant_files(self, project_id: str, task: str, 
+    def _get_relevant_files(self, project_id: str, task: str,
                            limit: int) -> List[Dict[str, Any]]:
-        """Get files relevant to the task from the persisted project index."""
-        project = self.memory_store.get_project(project_id)
-        if not project:
+        """Get files relevant to the task from unified index retrieval + disk snippets."""
+        from services.ingestion.index_store import ProjectIndexStore
+        from packages.retrieval.index_retrieval import read_indexed_snippet
+
+        index_store = ProjectIndexStore(self.memory_store)
+        root_path = index_store.get_project_root(project_id)
+        if not root_path:
             return []
 
-        project_root = project.get('root_path') or project.get('project_root')
-        if not project_root:
+        scored = self._search_scored(
+            project_id, task, memory_store=self.memory_store, limit=max(limit * 2, 10)
+        )
+        file_hits = [
+            sm for sm in scored
+            if (sm.memory.get("metadata") or {}).get("record_type") in (
+                "indexed_file", "indexed_symbol"
+            )
+        ]
+        if not file_hits:
             return []
 
-        try:
-            from services.ingestion.index_store import ProjectIndexStore
-            index_store = ProjectIndexStore(self.memory_store)
-            project_index = index_store.get_index_for_context(project_id, project_root)
-        except Exception as exc:
-            logger.warning(f"Unable to load project index for {project_id}: {exc}")
-            return []
-
-        if project_index is None:
-            return []
-
-        keywords = self._extract_keywords(task)
-        if not keywords:
-            return []
-
+        seen_paths: set = set()
         ranked_files: List[Dict[str, Any]] = []
-        for file_record in getattr(project_index, 'files', []) or []:
-            path = getattr(file_record, 'path', '')
-            if not path:
+
+        for sm in file_hits:
+            meta = sm.memory.get("metadata") or {}
+            path = meta.get("file_path") or meta.get("source_ref") or ""
+            if not path or path in seen_paths:
                 continue
+            seen_paths.add(path)
 
-            score = 0.0
-            searchable_text = path.lower()
-            searchable_text += ' ' + ' '.join(
-                getattr(symbol, 'name', '') for symbol in getattr(file_record, 'symbols', []) or []
-            ).lower()
-            searchable_text += ' ' + ' '.join(getattr(file_record, 'imports', []) or []).lower()
-
-            for keyword in keywords:
-                kw = keyword.lower()
-                score += searchable_text.count(kw) * 2.0
-                if kw in path.lower():
-                    score += 2.0
-
-            # include files with any real keyword hit or common task words
-            if score <= 0:
-                continue
+            symbol_line = meta.get("symbol_line")
+            snippet = read_indexed_snippet(
+                root_path, path, symbol_line=symbol_line or None
+            )
 
             ranked_files.append({
-                "id": f"indexed-file-{hashlib.sha256(path.encode()).hexdigest()[:12]}",
+                "id": sm.memory.get("id", f"indexed-file-{path}"),
                 "path": path,
-                "name": path.split('/')[-1],
-                "relevance_score": round(score, 3),
-                "last_modified": datetime.now().isoformat(),
-                "symbols": [getattr(symbol, 'name', '') for symbol in (getattr(file_record, 'symbols', []) or [])[:10]],
-                "kind": "indexed-file"
+                "name": path.split("/")[-1],
+                "relevance_score": sm.score,
+                "last_modified": sm.memory.get("updated_at", ""),
+                "symbols": [
+                    meta.get("symbol_name")
+                ] if meta.get("symbol_name") else [],
+                "kind": meta.get("record_type", "indexed_file"),
+                "provenance": sm.provenance_display or path,
+                "snippet": snippet,
+                "symbol": meta.get("symbol_name"),
+                "symbol_line": symbol_line,
             })
 
-        ranked_files.sort(key=lambda item: item['relevance_score'], reverse=True)
+            if len(ranked_files) >= limit:
+                break
+
+        ranked_files.sort(key=lambda item: item["relevance_score"], reverse=True)
         return ranked_files[:limit]
     
     def _get_current_state(self, project_id: str) -> Dict[str, Any]:

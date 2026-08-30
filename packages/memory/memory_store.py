@@ -14,6 +14,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def normalize_memory_metadata(meta: Optional[Dict]) -> Dict:
+    """Normalize knowledge metadata with Phase 2C defaults."""
+    from packages.knowledge.schema import normalize_metadata
+    return normalize_metadata(meta)
+
+
 class MemoryStore:
     """Handles persistent storage of memories and project knowledge."""
     
@@ -97,6 +103,8 @@ class MemoryStore:
             raise ValueError(f"Project {project_id} does not exist; create it first")
         memory_id = self._generate_id(f"{project_id}:{content}")
         source_hash = self._generate_source_hash(content)
+        if metadata is not None:
+            metadata = normalize_memory_metadata(metadata)
         metadata_json = json.dumps(metadata) if metadata else None
         
         with self._connect() as conn:
@@ -121,13 +129,15 @@ class MemoryStore:
             
             if row:
                 memory = dict(row)
-                # Parse metadata JSON if present
                 if memory.get('metadata'):
                     try:
-                        memory['metadata'] = json.loads(memory['metadata'])
+                        memory['metadata'] = normalize_memory_metadata(
+                            json.loads(memory['metadata'])
+                        )
                     except (json.JSONDecodeError, TypeError):
-                        memory['metadata'] = {}
-                # Update access tracking
+                        memory['metadata'] = normalize_memory_metadata({})
+                else:
+                    memory['metadata'] = normalize_memory_metadata({})
                 self._update_access(memory_id)
                 return memory
             return None
@@ -176,9 +186,13 @@ class MemoryStore:
                 # Parse metadata JSON if present
                 if memory['metadata']:
                     try:
-                        memory['metadata'] = json.loads(memory['metadata'])
+                        memory['metadata'] = normalize_memory_metadata(
+                            json.loads(memory['metadata'])
+                        )
                     except json.JSONDecodeError:
-                        memory['metadata'] = {}
+                        memory['metadata'] = normalize_memory_metadata({})
+                else:
+                    memory['metadata'] = normalize_memory_metadata({})
                 memories.append(memory)
                 
                 # Update access tracking
@@ -196,16 +210,23 @@ class MemoryStore:
         if content is not None:
             updates.append("content = ?")
             params.append(content)
-            updates.append("source_hash = ?")  # Update source hash when content changes
+            updates.append("source_hash = ?")
             params.append(self._generate_source_hash(content))
-        
+            existing = self.get_memory(memory_id)
+            if existing:
+                from packages.knowledge.schema import bump_version
+                merged = bump_version(existing.get("metadata") or {})
+                if metadata is not None:
+                    merged.update(normalize_memory_metadata(metadata))
+                metadata = merged
+
         if importance_score is not None:
             updates.append("importance_score = ?")
             params.append(importance_score)
         
         if metadata is not None:
             updates.append("metadata = ?")
-            params.append(json.dumps(metadata))
+            params.append(json.dumps(normalize_memory_metadata(metadata)))
         
         if not updates:
             return False
@@ -274,9 +295,13 @@ class MemoryStore:
                 memory = dict(row)
                 if memory['metadata']:
                     try:
-                        memory['metadata'] = json.loads(memory['metadata'])
+                        memory['metadata'] = normalize_memory_metadata(
+                            json.loads(memory['metadata'])
+                        )
                     except json.JSONDecodeError:
-                        memory['metadata'] = {}
+                        memory['metadata'] = normalize_memory_metadata({})
+                else:
+                    memory['metadata'] = normalize_memory_metadata({})
                 memories.append(memory)
             
             return memories

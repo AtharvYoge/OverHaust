@@ -32,6 +32,11 @@ class ScoredMemory:
     score: float
     reasons: List[str]
     retrieval_methods: List[str] = field(default_factory=list)
+    trust_score: Optional[float] = None
+    trust_reasons: List[str] = field(default_factory=list)
+    trust_status: str = "active"
+    provenance_display: str = ""
+    trust_include: bool = True
 
 
 class RelevanceEngine(Protocol):

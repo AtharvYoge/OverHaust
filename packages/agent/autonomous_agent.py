@@ -178,6 +178,29 @@ class OverhaustAgent:
         
         return results
     
+    def trace_code_flow(self, project_id: str, query: str,
+                        max_steps: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Trace a short code-flow evidence path for a project question.
+
+        Returns ordered steps with file, symbol, relevance, and trust scores.
+        """
+        from packages.context.retrieval import trace_code_flow as unified_trace
+        result = unified_trace(
+            project_id,
+            query,
+            memory_store=self.memory_store,
+            max_steps=max_steps,
+        )
+        self._record_action(
+            "trace_code_flow",
+            f"Traced code flow in project {project_id} for: {query}",
+            {"project_id": project_id, "query": query, "max_steps": max_steps},
+            {"steps_count": len(result.get("steps", [])),
+             "summary": result.get("summary", "")},
+        )
+        return result
+    
     def get_relevant_context(self, project_id: str, task: str) -> Dict[str, Any]:
         """
         Get a simplified relevant context for quick consumption.
@@ -219,7 +242,9 @@ class OverhaustAgent:
             "current_state": context.current_state,
             "constraints": context.constraints,
             "estimated_tokens": context.estimated_tokens,
-            "context_id": context.id
+            "context_id": context.id,
+            "insufficient_evidence": context.insufficient_evidence,
+            "evidence_note": context.evidence_note,
         }
         
         self._record_action(
@@ -354,6 +379,7 @@ class OverhaustAgent:
         merged_meta = dict(existing.get('metadata') or {})
         merged_meta.update({
             "stale": True,
+            "status": "stale",
             "stale_reason": reason,
             "stale_date": datetime.now().isoformat()
         })
@@ -371,6 +397,45 @@ class OverhaustAgent:
         )
         
         return success
+
+    def supersede_knowledge(
+        self,
+        project_id: str,
+        supersedes_memory_id: str,
+        content: str,
+        *,
+        confidence: Optional[float] = None,
+        provenance: Optional[str] = None,
+        knowledge_type: Optional[str] = None,
+    ) -> str:
+        """Create new knowledge that supersedes an older memory."""
+        from packages.knowledge.versioning import supersede
+
+        meta = {}
+        if knowledge_type:
+            meta["knowledge_type"] = knowledge_type
+        new_id = supersede(
+            self.memory_store,
+            project_id,
+            supersedes_memory_id,
+            content,
+            confidence=confidence,
+            provenance=provenance,
+            source_type="user",
+            authority="user",
+            metadata=meta or None,
+        )
+        self._record_action(
+            "supersede_knowledge",
+            f"Superseded memory {supersedes_memory_id} in project {project_id}",
+            {
+                "project_id": project_id,
+                "supersedes_memory_id": supersedes_memory_id,
+                "content_preview": content[:100],
+            },
+            {"memory_id": new_id},
+        )
+        return new_id
     
     def estimate_context(self, context_package: ContextPackage) -> Dict[str, int]:
         """

@@ -176,3 +176,122 @@ def test_error_handling(client):
         "project_id": "no-proj", "root_path": "/tmp"
     })
     assert r4.status_code == 404
+
+
+def test_supersede_knowledge(client):
+    c, store, _ = client
+    store.add_project("sup-p", "Sup", "", "")
+    old_id = store.add_memory(
+        "sup-p", "We use Firebase Auth", "permanent", 0.9,
+        {"knowledge_type": "decision", "confidence": 0.8, "status": "active"},
+    )
+    r = c.post("/api/v1/supersede-knowledge", json={
+        "project_id": "sup-p",
+        "supersedes_memory_id": old_id,
+        "content": "We use Auth0 for authentication",
+        "confidence": 0.95,
+    })
+    assert r.status_code == 200
+    new_id = r.json()["memory_id"]
+    old = store.get_memory(old_id)
+    assert old["metadata"]["status"] == "superseded"
+    assert old["metadata"]["superseded_by"] == new_id
+
+    sr = c.post("/api/v1/search-knowledge", json={
+        "project_id": "sup-p", "query": "authentication", "limit": 5,
+    })
+    assert sr.status_code == 200
+    top = sr.json()["results"][0]
+    assert "trust_score" in top
+    assert "Auth0" in top["content"]
+
+
+def test_context_trust_fields(client):
+    c, store, _ = client
+    store.add_project("tr-p", "Trust", "", "")
+    store.add_memory(
+        "tr-p", "We decided to use React", "permanent", 0.9,
+        {"knowledge_type": "decision", "confidence": 0.85, "status": "active",
+         "provenance": "User", "source_ref": "User"},
+    )
+    r = c.post("/api/v1/get-context", json={
+        "project_id": "tr-p", "task": "React frontend framework"
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert "insufficient_evidence" in body
+    assert "evidence_note" in body
+    assert body["relevant_knowledge"][0]["metadata"]["trust"]["score"] is not None
+
+
+def test_search_knowledge_returns_indexed_files(client):
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from packages.retrieval.test_index_retrieval import make_kot_tree
+
+    c, store, db = client
+    tmp = tempfile.mkdtemp()
+    try:
+        root = Path(tmp)
+        make_kot_tree(root)
+        c.post("/api/v1/projects", json={
+            "project_id": "labkot-api", "name": "LabKOT", "root_path": str(root),
+        })
+        r_idx = c.post("/api/v1/index-project", json={
+            "project_id": "labkot-api", "root_path": str(root),
+        })
+        assert r_idx.status_code == 200
+
+        r = c.post("/api/v1/search-knowledge", json={
+            "project_id": "labkot-api",
+            "query": "Where is the KOT generated?",
+            "limit": 5,
+        })
+        assert r.status_code == 200
+        results = r.json()["results"]
+        index_hits = [
+            x for x in results
+            if x.get("record_type") in ("indexed_file", "indexed_symbol")
+        ]
+        assert index_hits
+        assert any(
+            "kot_generator" in (x.get("metadata") or {}).get("file_path", "")
+            for x in index_hits
+        )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_trace_code_flow_api(client):
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from packages.retrieval.test_code_flow import make_kot_flow_tree
+
+    c, store, db = client
+    tmp = tempfile.mkdtemp()
+    try:
+        root = Path(tmp)
+        make_kot_flow_tree(root)
+        c.post("/api/v1/projects", json={
+            "project_id": "flow-api", "name": "Flow", "root_path": str(root),
+        })
+        r_idx = c.post("/api/v1/index-project", json={
+            "project_id": "flow-api", "root_path": str(root),
+        })
+        assert r_idx.status_code == 200
+
+        r = c.post("/api/v1/trace-code-flow", json={
+            "project_id": "flow-api",
+            "query": "Where is the KOT generated?",
+            "max_steps": 6,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["summary"]
+        assert body["steps"]
+        symbols = [s["symbol"] for s in body["steps"]]
+        assert "generateKOT" in symbols
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

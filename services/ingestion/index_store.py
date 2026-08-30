@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
 from services.ingestion.project_indexer import (
+    INDEX_EXTRACTOR_VERSION,
     ProjectIndexer,
     ProjectIndex,
     FileIndex,
@@ -70,6 +71,13 @@ class ProjectIndexStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pif_project ON project_index_files(project_id)"
             )
+            # Added after initial release; existing databases need the column.
+            try:
+                conn.execute(
+                    "ALTER TABLE project_index_meta ADD COLUMN extractor_version TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
 
     def load_index(self, project_id: str) -> Optional[ProjectIndex]:
@@ -105,14 +113,16 @@ class ProjectIndexStore:
             )
             conn.execute("""
                 INSERT OR REPLACE INTO project_index_meta
-                (project_id, root_path, indexed_at, total_tokens, stats)
-                VALUES (?, ?, ?, ?, ?)
+                (project_id, root_path, indexed_at, total_tokens, stats,
+                 extractor_version)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 index.project_id,
                 index.root_path,
                 index.indexed_at,
                 index.total_tokens,
                 json.dumps(index.stats),
+                INDEX_EXTRACTOR_VERSION,
             ))
             for f in index.files:
                 conn.execute("""
@@ -136,6 +146,17 @@ class ProjectIndexStore:
                     ))
             conn.commit()
 
+    def stored_extractor_version(self, project_id: str) -> str:
+        """Extractor fingerprint a persisted index was built with ('' if none)."""
+        meta = self._load_meta(project_id)
+        if not meta:
+            return ""
+        return meta.get("extractor_version") or ""
+
+    def extractor_version_is_current(self, project_id: str) -> bool:
+        """False when persisted symbols predate the current extraction rules."""
+        return self.stored_extractor_version(project_id) == INDEX_EXTRACTOR_VERSION
+
     def sync_project(
         self, project_id: str, root_path: str, force_full: bool = False
     ) -> Tuple[ProjectIndex, Dict[str, Any]]:
@@ -144,20 +165,30 @@ class ProjectIndexStore:
 
         Returns (updated_index, sync_report) where sync_report includes
         diff details and whether a full scan was performed.
+
+        A stale extractor fingerprint forces a full re-scan: content hashes
+        cannot detect that the extraction rules themselves changed, so an
+        incremental pass would keep symbols the current extractor would no
+        longer produce (or would now produce for the first time).
         """
         normalized_root = str(Path(root_path).expanduser().resolve())
-        previous = None if force_full else self.load_index(project_id)
+        stale_extractor = not self.extractor_version_is_current(project_id)
+        previous = (
+            None if (force_full or stale_extractor) else self.load_index(project_id)
+        )
 
         if previous is None or previous.root_path != normalized_root:
             index = self.indexer.index_project(normalized_root, project_id)
             self.save_index(index)
             return index, {
                 "mode": "full",
+                "reason": "extractor_version_changed" if stale_extractor else "",
                 "added": [f.path for f in index.files],
                 "modified": [],
                 "deleted": [],
                 "renamed": [],
                 "file_count": len(index.files),
+                "extractor_version": INDEX_EXTRACTOR_VERSION,
             }
 
         diff = self.indexer.diff_project(previous, normalized_root)
@@ -170,6 +201,7 @@ class ProjectIndexStore:
                 "mode": "unchanged",
                 "added": [], "modified": [], "deleted": [], "renamed": [],
                 "file_count": len(previous.files),
+                "extractor_version": INDEX_EXTRACTOR_VERSION,
             }
 
         index = self.indexer.apply_diff(previous, diff, normalized_root)
@@ -181,7 +213,22 @@ class ProjectIndexStore:
             "deleted": diff["deleted"],
             "renamed": diff["renamed"],
             "file_count": len(index.files),
+            "extractor_version": INDEX_EXTRACTOR_VERSION,
         }
+
+    def load_index_or_none(self, project_id: str) -> Optional[ProjectIndex]:
+        """Load persisted index without syncing/rescanning."""
+        return self.load_index(project_id)
+
+    def get_project_root(self, project_id: str) -> Optional[str]:
+        """Return indexed root path from meta, or project root_path fallback."""
+        meta = self._load_meta(project_id)
+        if meta and meta.get("root_path"):
+            return meta["root_path"]
+        project = self.store.get_project(project_id)
+        if project:
+            return project.get("root_path") or project.get("project_root") or None
+        return None
 
     def get_index_for_context(self, project_id: str, root_path: str) -> Optional[ProjectIndex]:
         """Load persisted index or perform initial sync if root_path is set."""
