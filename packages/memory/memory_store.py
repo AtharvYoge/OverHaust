@@ -337,6 +337,27 @@ class MemoryStore:
                         project['metadata'] = {}
                 return project
             return None
+
+    def list_projects(self) -> List[Dict]:
+        """Return every registered project, including unindexed ones."""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM projects ORDER BY name, id"
+            ).fetchall()
+        projects: List[Dict] = []
+        for row in rows:
+            project = dict(row)
+            raw = project.get("metadata")
+            if raw:
+                try:
+                    project["metadata"] = json.loads(raw)
+                except json.JSONDecodeError:
+                    project["metadata"] = {}
+            else:
+                project["metadata"] = {}
+            projects.append(project)
+        return projects
     
     def cleanup_stale_memories(self, max_age_days: int = 30) -> int:
         """Remove memories older than max_age_days that aren't permanent or high importance."""

@@ -43,9 +43,17 @@ def merge_scored_results(
         mid = sm.memory.get("id", "")
         meta = sm.memory.get("metadata") or {}
         fpath = meta.get("file_path") or meta.get("source_ref") or ""
+        record_type = meta.get("record_type") or ""
 
+        # File hits may collapse to one path. Symbol hits stay even when a
+        # file record for the same path scored higher.
         existing_path = by_path.get(fpath) if fpath else None
-        if fpath and existing_path and existing_path.score >= sm.score:
+        if (
+            record_type != "indexed_symbol"
+            and fpath
+            and existing_path
+            and existing_path.score >= sm.score
+        ):
             continue
 
         existing_id = by_id.get(mid)
@@ -53,7 +61,7 @@ def merge_scored_results(
             continue
 
         by_id[mid] = sm
-        if fpath:
+        if fpath and record_type != "indexed_symbol":
             by_path[fpath] = sm
 
     # Rebuild unique list preferring by_id (symbol + file may share path — keep both ids)

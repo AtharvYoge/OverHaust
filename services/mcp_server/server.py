@@ -111,14 +111,16 @@ TOOL_DEFS = [
     ),
     types.Tool(
         name="get_relevant_context",
-        description="Compact relevant context for a task (knowledge + decisions + constraints, no files).",
+        description="Compact relevant context for a task. Accepts project_id or root_path, and prompt or task.",
         input_schema={
             "type": "object",
             "properties": {
-                "project_id": _json_schema_string("Project"),
-                "task": _json_schema_string("The current task/question"),
+                "project_id": _json_schema_string("Registered project id"),
+                "root_path": _json_schema_string("Repository path used to resolve project_id"),
+                "prompt": _json_schema_string("The current task/question"),
+                "task": _json_schema_string("Alias of prompt"),
             },
-            "required": ["project_id", "task"],
+            "required": [],
         },
     ),
     types.Tool(
@@ -302,11 +304,28 @@ class OverhaustMCPServer:
     _tool_get_project_context = _tool_build_context
 
     def _tool_get_relevant_context(self, args: Dict[str, Any]):
+        """Compact context via assemble_agent_context (prompt or task, optional root_path)."""
+        from packages.context.agent_context import (
+            MCP_MAX_PROMPT_LENGTH,
+            invoke_context_request,
+        )
+
+        prompt = args.get("prompt") or args.get("task") or ""
+        include_code_flow = args.get("include_code_flow", "auto")
         try:
-            rc = self.agent.get_relevant_context(args["project_id"], args["task"])
+            response = invoke_context_request(
+                args.get("project_id") or "",
+                prompt,
+                root_path=args.get("root_path"),
+                memory_store=self.store,
+                include_code_flow=include_code_flow,
+                max_files=args.get("max_files"),
+                max_symbols=args.get("max_symbols"),
+                max_prompt_length=MCP_MAX_PROMPT_LENGTH,
+            )
         except ValueError as e:
             return _err(str(e))
-        return _ok(rc)
+        return _ok(response.to_mcp_payload())
 
     def _tool_update_memory(self, args: Dict[str, Any]):
         ok = self.store.update_memory(args["memory_id"],

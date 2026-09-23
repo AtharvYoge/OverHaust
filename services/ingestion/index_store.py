@@ -230,6 +230,88 @@ class ProjectIndexStore:
             return project.get("root_path") or project.get("project_root") or None
         return None
 
+    def resolve_project_id(self, root_path: str) -> Optional[str]:
+        """
+        Map an absolute path to a registered project.
+
+        Exact roots and paths nested under a registered root both match.
+        The longest matching root wins when several projects could apply.
+        """
+        if not root_path:
+            return None
+        try:
+            query = str(Path(root_path).expanduser().resolve())
+        except OSError:
+            return None
+
+        candidates: List[Tuple[str, str]] = []
+        seen: set = set()
+        with self.store._connect() as conn:
+            for pid, stored in conn.execute(
+                "SELECT project_id, root_path FROM project_index_meta"
+            ):
+                if pid and stored and pid not in seen:
+                    candidates.append((pid, stored))
+                    seen.add(pid)
+            for pid, stored in conn.execute(
+                "SELECT id, root_path FROM projects"
+            ):
+                if pid and stored and pid not in seen:
+                    candidates.append((pid, stored))
+                    seen.add(pid)
+
+        best_id: Optional[str] = None
+        best_len = -1
+        for pid, stored in candidates:
+            try:
+                normalized = str(Path(stored).expanduser().resolve())
+            except OSError:
+                continue
+            if query == normalized or query.startswith(normalized.rstrip("/") + "/"):
+                if len(normalized) > best_len:
+                    best_id = pid
+                    best_len = len(normalized)
+        return best_id
+
+    def index_health(self, project_id: str) -> Dict[str, Any]:
+        """Read-only readiness report for one registered project."""
+        meta = self._load_meta(project_id)
+        project = None
+        try:
+            project = self.store.get_project(project_id)
+        except Exception:
+            project = None
+        root = ""
+        if meta and meta.get("root_path"):
+            root = meta["root_path"]
+        elif project:
+            root = project.get("root_path") or ""
+        files = self._load_files(project_id) if meta else []
+        indexed = bool(files)
+        extractor_current = self.extractor_version_is_current(project_id) if meta else False
+        root_exists = bool(root) and Path(root).is_dir()
+        issues: List[str] = []
+        if not meta and not project:
+            issues.append("project_not_registered")
+        if not indexed:
+            issues.append("not_indexed")
+        if meta and not extractor_current:
+            issues.append("extractor_stale")
+        if root and not root_exists:
+            issues.append("root_missing")
+        if not root:
+            issues.append("root_unset")
+        return {
+            "project_id": project_id,
+            "ok": not issues,
+            "indexed": indexed,
+            "file_count": len(files),
+            "extractor_current": extractor_current,
+            "root_exists": root_exists,
+            "root_path": root,
+            "issues": issues,
+        }
+
     def get_index_for_context(self, project_id: str, root_path: str) -> Optional[ProjectIndex]:
         """Load persisted index or perform initial sync if root_path is set."""
         if not root_path:

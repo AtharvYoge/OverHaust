@@ -59,8 +59,14 @@ def build_index_content(file_record, symbol=None) -> str:
     return content
 
 
-def _stable_index_id(record_type: str, file_path: str, symbol_name: str = "") -> str:
-    key = f"{record_type}:{file_path}:{symbol_name}"
+def _stable_index_id(
+    project_id: str,
+    record_type: str,
+    file_path: str,
+    symbol_name: str = "",
+) -> str:
+    """Deterministic id scoped to a project so identical symbols do not collide."""
+    key = f"{project_id}:{record_type}:{file_path}:{symbol_name}"
     return f"index:{record_type}:{hashlib.sha256(key.encode()).hexdigest()[:12]}"
 
 
@@ -91,6 +97,7 @@ def index_hit_to_memory(
         meta["symbol_line"] = getattr(symbol, "line", 0)
 
     mem_id = _stable_index_id(
+        project_id,
         "symbol" if is_symbol else "file",
         path,
         meta.get("symbol_name", ""),
@@ -105,6 +112,27 @@ def index_hit_to_memory(
         "updated_at": indexed_at or datetime.now(timezone.utc).isoformat(),
         "metadata": meta,
     }
+
+
+def _expand_identifier_keywords(words: List[str]) -> List[str]:
+    """
+    Split dotted identifiers such as Class.method into searchable parts.
+
+    Query tokenizers keep ``OverhaustAgent.get_relevant_context`` as one word,
+    which never matches the indexed symbol ``get_relevant_context``.
+    """
+    expanded: List[str] = []
+    seen = set()
+    for word in words or []:
+        parts = [word]
+        if "." in word:
+            parts.extend(p for p in word.split(".") if p)
+        for part in parts:
+            key = part.lower()
+            if key and key not in seen:
+                seen.add(key)
+                expanded.append(part)
+    return expanded
 
 
 def _matches_index_term(text: str, term: str) -> bool:
@@ -139,7 +167,7 @@ def score_index_record(
         reasons.append("exact phrase in index metadata")
         content_matched = True
 
-    q_words = _keywords(query)
+    q_words = _expand_identifier_keywords(_keywords(query))
     if not q_words:
         return 0.0, []
 
@@ -170,11 +198,17 @@ def score_index_record(
             reasons.append(f"keyword '{qw}'")
 
     if symbol_name:
+        sym_l = symbol_name.lower()
         for qw in q_words:
             if len(qw) >= 3 and _matches_index_term(symbol_name, qw):
                 content_matched = True
                 if f"symbol name '{qw}'" not in reasons:
                     reasons.append(f"symbol name '{qw}'")
+            # Qualified names (Class.method) should rank the method above the class.
+            if "." in qw and sym_l == qw.split(".")[-1].lower():
+                score += 4.0
+                content_matched = True
+                reasons.append(f"qualified symbol '{symbol_name}'")
 
     if matched == 0:
         return 0.0, []

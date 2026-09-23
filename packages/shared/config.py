@@ -158,3 +158,23 @@ def get_index_weak_kw_threshold() -> float:
 def get_index_generic_penalty() -> float:
     """Score multiplier for generic boilerplate symbol/path hits."""
     return _float_env("OVERHAUST_INDEX_GENERIC_PENALTY", 0.15)
+
+
+def get_context_max_files() -> int:
+    """Max files packaged into compact agent context."""
+    return _int_env("OVERHAUST_CONTEXT_MAX_FILES", 5)
+
+
+def get_context_max_symbols() -> int:
+    """Max symbols packaged into compact agent context."""
+    return _int_env("OVERHAUST_CONTEXT_MAX_SYMBOLS", 8)
+
+
+def get_context_max_evidence() -> int:
+    """Max evidence snippets packaged into compact agent context."""
+    return _int_env("OVERHAUST_CONTEXT_MAX_EVIDENCE", 10)
+
+
+def get_context_search_limit() -> int:
+    """Retrieval hit limit used before context assembly clamps files/symbols."""
+    return _int_env("OVERHAUST_CONTEXT_SEARCH_LIMIT", 20)
