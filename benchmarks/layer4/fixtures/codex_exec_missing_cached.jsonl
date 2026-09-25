@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"thread-partial"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"generateKOT is defined in src/kitchen/kot_generator.ts and returns orderId."}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
