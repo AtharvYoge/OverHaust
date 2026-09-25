@@ -1,0 +1,22 @@
+{
+  "task_id": "adv_unrelated_weather",
+  "title": "Unrelated query should not invent kitchen facts",
+  "prompt": "What is the weather forecast for this repository?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "repository_size": "medium",
+  "fixture": "labkot_retrieval",
+  "category": "adversarial_unrelated",
+  "difficulty": "easy",
+  "adversarial": true,
+  "expected_symbols": [],
+  "expected_files": [],
+  "expected_answer_requirements": ["weather"],
+  "rubric": {
+    "required_facts": [],
+    "required_any_of": [["unknown", "not available", "no weather", "cannot", "MISSING"]],
+    "forbidden_claims": [],
+    "notes": "Unrelated query: acknowledge lack of weather info."
+  },
+  "notes": "Negative case: unrelated query."
+}

@@ -1,0 +1,37 @@
+{
+  "task_id": "sym_generate_kot",
+  "title": "Where is generateKOT defined?",
+  "prompt": "Where is generateKOT defined and what does it return?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "fixture": "labkot_retrieval",
+  "category": "symbol_lookup",
+  "difficulty": "easy",
+  "expected_symbols": [
+    "generateKOT"
+  ],
+  "expected_files": [
+    "src/kitchen/kot_generator.ts"
+  ],
+  "expected_answer_requirements": [
+    "generateKOT",
+    "kot_generator",
+    "orderId"
+  ],
+  "notes": "Symbol lookup against LabKOT kitchen fixture.",
+  "repository_size": "medium",
+  "rubric": {
+    "required_facts": [
+      "generateKOT",
+      "kot_generator",
+      "orderId"
+    ],
+    "required_files": [
+      "src/kitchen/kot_generator.ts"
+    ],
+    "required_symbols": [
+      "generateKOT"
+    ],
+    "notes": "Rubric locked before result collection."
+  }
+}

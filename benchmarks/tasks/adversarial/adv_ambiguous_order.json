@@ -1,0 +1,22 @@
+{
+  "task_id": "adv_ambiguous_order",
+  "title": "Ambiguous 'order' query",
+  "prompt": "How does an order work?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "repository_size": "medium",
+  "fixture": "labkot_retrieval",
+  "category": "adversarial_ambiguous",
+  "difficulty": "hard",
+  "adversarial": true,
+  "expected_symbols": ["createOrder"],
+  "expected_files": ["src/kitchen/order_service.ts"],
+  "expected_answer_requirements": ["createOrder", "order"],
+  "rubric": {
+    "required_facts": ["order"],
+    "required_any_of": [["createOrder", "generateKOT", "order_service"]],
+    "required_files": ["src/kitchen/order_service.ts"],
+    "notes": "Ambiguous prompt: still expect kitchen order evidence, not marketing page."
+  },
+  "notes": "Negative/stress case: ambiguous query may pull broad exploration."
+}

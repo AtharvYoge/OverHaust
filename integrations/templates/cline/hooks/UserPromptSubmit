@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# OverHaust Cline UserPromptSubmit hook wrapper.
+# Emits Cline contextModification JSON (not Codex additionalContext).
+exec {{PYTHON}} "{{CLINE_HOOK_SCRIPT}}"

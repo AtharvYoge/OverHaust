@@ -1,0 +1,16 @@
+{
+  "description": "OverHaust UserPromptSubmit hook — inject compact repository context before each turn.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{HOOK_COMMAND}}",
+            "statusMessage": "OverHaust context"
+          }
+        ]
+      }
+    ]
+  }
+}

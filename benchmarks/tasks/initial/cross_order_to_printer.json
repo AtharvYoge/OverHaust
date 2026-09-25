@@ -1,0 +1,43 @@
+{
+  "task_id": "cross_order_to_printer",
+  "title": "Components between order placement and Quikot printer",
+  "prompt": "What components are involved between placing an order and sending it to the Quikot printer?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "fixture": "labkot_retrieval",
+  "category": "cross_file_reasoning",
+  "difficulty": "medium",
+  "expected_symbols": [
+    "createOrder",
+    "sendOrderToQuikotPrinter",
+    "connectQuikotHardware"
+  ],
+  "expected_files": [
+    "src/kitchen/order_service.ts",
+    "src/hardware/quikot_client.ts"
+  ],
+  "expected_answer_requirements": [
+    "order_service",
+    "quikot",
+    "printer"
+  ],
+  "notes": "Cross-file reasoning spanning kitchen and hardware packages.",
+  "repository_size": "medium",
+  "rubric": {
+    "required_facts": [
+      "order_service",
+      "quikot",
+      "printer"
+    ],
+    "required_files": [
+      "src/kitchen/order_service.ts",
+      "src/hardware/quikot_client.ts"
+    ],
+    "required_symbols": [
+      "createOrder",
+      "sendOrderToQuikotPrinter",
+      "connectQuikotHardware"
+    ],
+    "notes": "Rubric locked before result collection."
+  }
+}

@@ -1,0 +1,13 @@
+---
+name: OverHaust context
+alwaysApply: true
+description: Call OverHaust MCP get_relevant_context before exploring the repository.
+---
+
+For every substantive repository task, call OverHaust MCP `get_relevant_context` **before** repository exploration tools.
+
+Pass `prompt` (the user's task) and preferably `root_path` (the workspace/repository root of the indexed project). You may instead pass `project_id` when known (in this OverHaust monorepo: `overhaust`). Use the returned `context`. Explore the repo only for gaps it does not answer.
+
+Do not call again for the same task unless evidence is insufficient or the task changes. Skip trivial chat that needs no repository knowledge. If `insufficient_evidence` or confidence is low, do not treat OverHaust as authoritative; verify important details with normal tools.
+
+If the OverHaust MCP server is unavailable, disconnected, or the tool call fails, continue with normal repository tools. Do not block the coding task on OverHaust.

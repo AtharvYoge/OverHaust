@@ -1,0 +1,22 @@
+{
+  "task_id": "adv_missing_symbol",
+  "title": "Ask for a symbol that does not exist",
+  "prompt": "Where is ghostPrinterRouter defined and what does it call?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "repository_size": "medium",
+  "fixture": "labkot_retrieval",
+  "category": "adversarial_missing",
+  "difficulty": "medium",
+  "adversarial": true,
+  "expected_symbols": [],
+  "expected_files": [],
+  "expected_answer_requirements": ["MISSING"],
+  "rubric": {
+    "required_facts": [],
+    "required_any_of": [["not found", "does not exist", "no definition", "missing", "MISSING"]],
+    "forbidden_claims": ["FOUND: ghostPrinterRouter", "FOUND symbol: ghostPrinterRouter"],
+    "notes": "Missing symbol: must not invent a FOUND definition."
+  },
+  "notes": "Negative case: missing symbols / insufficient evidence."
+}

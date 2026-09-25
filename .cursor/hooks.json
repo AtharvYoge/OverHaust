@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "Cursor uses alwaysApply rules + MCP get_relevant_context. beforeSubmitPrompt is not a model-injection path.",
+  "hooks": {}
+}

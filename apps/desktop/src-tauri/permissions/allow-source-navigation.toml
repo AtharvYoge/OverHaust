@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-source-navigation"
+description = "Allow checking and opening local project source files."
+commands.allow = ["check_source_availability", "open_source_file"]

@@ -1,0 +1,45 @@
+{
+  "task_id": "arch_kitchen_hardware",
+  "title": "How kitchen code relates to Quikot hardware",
+  "prompt": "Explain how the kitchen order subsystem relates to the Quikot hardware/printer subsystem.",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "fixture": "labkot_retrieval",
+  "category": "architecture",
+  "difficulty": "hard",
+  "expected_symbols": [
+    "generateKOT",
+    "notifyKitchen",
+    "sendOrderToQuikotPrinter"
+  ],
+  "expected_files": [
+    "src/kitchen/order_service.ts",
+    "src/kitchen/kot_generator.ts",
+    "src/hardware/quikot_client.ts"
+  ],
+  "expected_answer_requirements": [
+    "kitchen",
+    "quikot",
+    "hardware"
+  ],
+  "notes": "Architecture explanation across kitchen and hardware directories.",
+  "repository_size": "medium",
+  "rubric": {
+    "required_facts": [
+      "kitchen",
+      "quikot",
+      "hardware"
+    ],
+    "required_files": [
+      "src/kitchen/order_service.ts",
+      "src/kitchen/kot_generator.ts",
+      "src/hardware/quikot_client.ts"
+    ],
+    "required_symbols": [
+      "generateKOT",
+      "notifyKitchen",
+      "sendOrderToQuikotPrinter"
+    ],
+    "notes": "Rubric locked before result collection."
+  }
+}

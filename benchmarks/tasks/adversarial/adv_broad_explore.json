@@ -1,0 +1,21 @@
+{
+  "task_id": "adv_broad_explore",
+  "title": "Broad architecture skim",
+  "prompt": "Give a complete tour of every module in this repository and how they interact.",
+  "project_id": "bench-large",
+  "repository": "fixture:labkot_large",
+  "repository_size": "large",
+  "fixture": "labkot_large",
+  "category": "adversarial_broad",
+  "difficulty": "hard",
+  "adversarial": true,
+  "expected_symbols": ["createOrder", "DeviceService"],
+  "expected_files": ["src/kitchen/order_service.ts"],
+  "expected_answer_requirements": ["kitchen", "order"],
+  "rubric": {
+    "required_facts": ["kitchen"],
+    "required_any_of": [["createOrder", "generateKOT", "OrderFlowService"]],
+    "notes": "Broad exploration: OverHaust may help or hurt depending on packaging vs tool budget."
+  },
+  "notes": "Negative/stress: tasks requiring broad exploration on LARGE repos."
+}

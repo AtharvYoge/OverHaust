@@ -1,0 +1,23 @@
+{
+  "task_id": "adv_tiny_one_file",
+  "title": "Tiny repo: where is generateKOT?",
+  "prompt": "Where is generateKOT defined?",
+  "project_id": "bench-small",
+  "repository": "fixture:tiny_kot",
+  "repository_size": "small",
+  "fixture": "tiny_kot",
+  "category": "adversarial_tiny",
+  "difficulty": "easy",
+  "adversarial": true,
+  "expected_symbols": ["generateKOT"],
+  "expected_files": ["src/kot.ts"],
+  "expected_answer_requirements": ["generateKOT", "kot.ts"],
+  "rubric": {
+    "required_facts": ["generateKOT"],
+    "required_files": ["src/kot.ts"],
+    "required_symbols": ["generateKOT"],
+    "forbidden_claims": ["quikot_client", "OrderFlowService"],
+    "notes": "Tiny repo: full-file read may beat packaged OverHaust context."
+  },
+  "notes": "Negative case: SMALL repo where OverHaust context can cost more than reading one file."
+}

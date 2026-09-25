@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Thin launcher: `scripts/overhaust <command>`; symlink onto PATH if desired.
+exec python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/overhaust_cli.py" "$@"

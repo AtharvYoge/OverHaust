@@ -1,0 +1,45 @@
+{
+  "task_id": "flow_order_to_kitchen",
+  "title": "How does an order reach the kitchen?",
+  "prompt": "How does an order move from creation to the kitchen notification?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "fixture": "labkot_retrieval",
+  "category": "code_flow",
+  "difficulty": "medium",
+  "expected_symbols": [
+    "createOrder",
+    "generateKOT",
+    "notifyKitchen"
+  ],
+  "expected_files": [
+    "src/kitchen/order_service.ts",
+    "src/kitchen/kot_generator.ts",
+    "src/kitchen/notifications.ts"
+  ],
+  "expected_answer_requirements": [
+    "createOrder",
+    "generateKOT",
+    "notifyKitchen"
+  ],
+  "notes": "Forward code-flow: handleOrderPlaced/createOrder \u2192 generateKOT \u2192 notifyKitchen.",
+  "repository_size": "medium",
+  "rubric": {
+    "required_facts": [
+      "createOrder",
+      "generateKOT",
+      "notifyKitchen"
+    ],
+    "required_files": [
+      "src/kitchen/order_service.ts",
+      "src/kitchen/kot_generator.ts",
+      "src/kitchen/notifications.ts"
+    ],
+    "required_symbols": [
+      "createOrder",
+      "generateKOT",
+      "notifyKitchen"
+    ],
+    "notes": "Rubric locked before result collection."
+  }
+}

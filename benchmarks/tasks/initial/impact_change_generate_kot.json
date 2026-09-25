@@ -1,0 +1,41 @@
+{
+  "task_id": "impact_change_generate_kot",
+  "title": "Impact of changing generateKOT",
+  "prompt": "If we change the generateKOT function signature, which components are likely affected?",
+  "project_id": "bench-labkot",
+  "repository": "fixture:labkot_retrieval",
+  "fixture": "labkot_retrieval",
+  "category": "change_impact",
+  "difficulty": "medium",
+  "expected_symbols": [
+    "generateKOT",
+    "createOrder"
+  ],
+  "expected_files": [
+    "src/kitchen/kot_generator.ts",
+    "src/kitchen/order_service.ts"
+  ],
+  "expected_answer_requirements": [
+    "generateKOT",
+    "createOrder",
+    "order_service"
+  ],
+  "notes": "Change impact: callers of generateKOT in order_service.",
+  "repository_size": "medium",
+  "rubric": {
+    "required_facts": [
+      "generateKOT",
+      "createOrder",
+      "order_service"
+    ],
+    "required_files": [
+      "src/kitchen/kot_generator.ts",
+      "src/kitchen/order_service.ts"
+    ],
+    "required_symbols": [
+      "generateKOT",
+      "createOrder"
+    ],
+    "notes": "Rubric locked before result collection."
+  }
+}
