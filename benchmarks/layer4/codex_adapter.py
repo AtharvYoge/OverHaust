@@ -97,6 +97,9 @@ class CodexSessionCapture:
     started_at: str = ""
     finished_at: str = ""
     fresh_codex_home: bool = True
+    pair_id: str = ""
+    order_in_pair: int = 1
+    condition_order: str = ""
 
 
 class CodexAdapter:
@@ -359,6 +362,13 @@ def session_from_capture(
 
     gaps = telemetry_gaps_for(figures)
     status = primary_metric_status_for(figures)
+    pair_id = capture.pair_id or f"{capture.task_id}-r{capture.rep}"
+    if capture.condition_order:
+        condition_order = capture.condition_order
+    elif capture.condition == "overhaust":
+        condition_order = "overhaust->baseline"
+    else:
+        condition_order = "baseline->overhaust"
 
     return Layer4SessionResult(
         schema_version=SCHEMA_VERSION,
@@ -375,6 +385,9 @@ def session_from_capture(
         task_id=capture.task_id,
         rep=capture.rep,
         seed=capture.seed,
+        pair_id=pair_id,
+        order_in_pair=capture.order_in_pair,
+        condition_order=condition_order,
         execution_order=capture.execution_order,
         snapshot_hash=capture.snapshot_hash,
         snapshot_hash_before=capture.snapshot_hash_before,

@@ -145,6 +145,9 @@ class Layer4SessionResult:
     task_id: str
     rep: int
     seed: int
+    pair_id: str
+    order_in_pair: int
+    condition_order: str
     execution_order: int
     snapshot_hash: str
     snapshot_hash_before: Optional[str]
@@ -212,6 +215,15 @@ class Layer4SessionResult:
             raise ValueError("rep must be >= 0")
         if self.execution_order < 0:
             raise ValueError("execution_order must be >= 0")
+        if not self.pair_id:
+            raise ValueError("pair_id is required")
+        if self.order_in_pair not in (1, 2):
+            raise ValueError("order_in_pair must be 1 or 2")
+        if self.condition_order not in {"baseline->overhaust", "overhaust->baseline"}:
+            raise ValueError(
+                "condition_order must be 'baseline->overhaust' or "
+                f"'overhaust->baseline', got {self.condition_order!r}"
+            )
 
         for name in METRIC_FIELDS:
             figure = getattr(self, name)

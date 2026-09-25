@@ -11,10 +11,17 @@ or `invoke_context_request`.
 Read [PROTOCOL.md](PROTOCOL.md) for isolation rules, validity, and what happens
 to failures.
 
-## Pilot (8 sessions)
+## Presets
+
+The default preset is the 8-session pilot. `--preset full` is all 5 Layer 3
+tasks × both conditions × 2 reps = 20 sessions. Seed defaults to `1`.
+Each `(task, rep)` is a pair: within a task the two reps use opposite
+condition orders, and the two sessions of a pair run back-to-back. Pair units
+are shuffled with that seed.
 
 ```bash
 python3 -m benchmarks.layer4.pilot --model <model>
+python3 -m benchmarks.layer4.pilot --preset full --model <model>
 ```
 
 `<model>` is passed to every session as `codex exec --model`. Use the same
@@ -25,10 +32,12 @@ Plan only, no Codex process and no provider call:
 
 ```bash
 python3 -m benchmarks.layer4.pilot --dry-run
+python3 -m benchmarks.layer4.pilot --preset full --dry-run
 ```
 
-The matrix is `sym_generate_kot` and `arch_kitchen_hardware` ×
-`baseline` / `overhaust` × 2 reps, seed `1`.
+The pilot matrix is `sym_generate_kot` and `arch_kitchen_hardware` ×
+`baseline` / `overhaust` × 2 reps. The full matrix uses every task in
+`benchmarks/tasks/initial`.
 
 Results land in `benchmarks/results/layer4-<timestamp>.json` (and a `.md`
 summary). Existing result files are not overwritten.
@@ -53,8 +62,9 @@ summary). Existing result files are not overwritten.
    indexes a temporary LabKOT fixture and points the hook at it with
    `OVERHAUST_DB_PATH` and `OVERHAUST_PROJECT_ID`. The production memory
    database is not used.
-4. **Network access to the model provider** for a live pilot. Eight sessions.
-   CI and unit tests do not make that call.
+4. **Network access to the model provider** for a live run. Eight sessions
+   for the pilot, twenty for `--preset full`. CI and unit tests do not make
+   that call.
 
 Example:
 
@@ -73,12 +83,12 @@ under the isolated `CODEX_HOME`. Details are in [PROTOCOL.md](PROTOCOL.md).
 
 | Measurement | Captured? | Kind |
 |-------------|-----------|------|
-| Input tokens | Yes, from the last `turn.completed.usage.input_tokens` (cumulative thread total) | exact |
-| Cached input tokens | Yes, when that field is present. A missing field stays null, not zero. Cached tokens are a subset of input. | exact or unavailable |
+| Input tokens | Yes, from the last `turn.completed.usage.input_tokens` (cumulative thread total). Cached input is not subtracted. | exact |
+| Cached input tokens | Yes, when that field is present. A missing field stays null, not zero. Cached tokens are a component of input and stay inside that total. Provider prompt caching is not disabled and prompts are not cache-busted. | exact or unavailable |
 | Output tokens | Yes, from `usage.output_tokens` | exact |
 | Reasoning output tokens | Yes, when present. Not subtracted from output. | exact or unavailable |
 | Cache-write input tokens | Yes, when present. | exact or unavailable |
-| Single `total_tokens` | Not in the exec JSON usage object. Taken only from a rollout `token_count.total_token_usage.total_tokens` when its components match the exec usage. Never summed by this harness. | exact or unavailable |
+| Single `total_tokens` | Not in the exec JSON usage object. Taken only from a rollout `token_count.total_token_usage.total_tokens` when its components match the exec usage. If that provider total is absent, the field stays unavailable. Never summed by this harness. | exact or unavailable |
 | Per-request `last_token_usage` | Stored as supplemental telemetry only. Not the session total. | not a primary field |
 | Tool calls | Yes, completed command / MCP / collab / web-search items | exact |
 | Files changed | Yes, byte diff of the fixture against the snapshot, plus Codex `file_change` paths as a separate count | exact |
@@ -88,7 +98,10 @@ under the isolated `CODEX_HOME`. Details are in [PROTOCOL.md](PROTOCOL.md).
 | OverHaust context bytes | Yes, hook debug `context_bytes` | exact |
 | OverHaust retrieval latency | No. Hook `latency_ms` under debug is end-to-end hook time, recorded as `overhaust_hook_latency_ms` instead. | unavailable |
 | Correctness | Yes, Layer 3 task rubric on the final agent message | bool or null |
-| Agent version, model, condition, task, rep, seed, execution order, snapshot hash, raw telemetry paths | Yes | — |
+| Agent version, model, condition, task, rep, seed, pair id, order in pair, condition order, execution order, snapshot hash, raw telemetry paths | Yes | — |
+| Cache analysis (task × condition and condition overall) and per-session tool-call counts | Yes, in the JSON and markdown reports. Means use valid sessions with exact figures. | — |
+
+Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
 
 The OverHaust condition is the existing UserPromptSubmit hook, not a prompt prefix.
 Baseline is the same command with no hook installed.
@@ -103,7 +116,7 @@ benchmarks/layer4/
   codex_adapter.py     map a captured Codex session onto the schema
   codex_parse.py       exec JSONL, rollout, hook debug
   condition.py         baseline vs OverHaust Codex home
-  matrix.py            pilot plan
+  matrix.py            pilot and full presets, pair order
   runner.py            execute the matrix, write timestamped results
   cli.py / pilot.py    python3 -m benchmarks.layer4.pilot
   fixtures/            recorded Codex output for unit tests

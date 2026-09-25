@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"thread-two-tools"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_a","type":"command_execution","command":"sed -n 1,20p src/hardware/quikot_client.ts","aggregated_output":"export function send() {}","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_b","type":"command_execution","command":"sed -n 1,20p src/kitchen/order_service.ts","aggregated_output":"export function submit() {}","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_msg","type":"agent_message","text":"The kitchen order subsystem calls generateKOT and notifyKitchen, then sendOrderToQuikotPrinter in the quikot hardware client (src/kitchen/order_service.ts, src/kitchen/kot_generator.ts, src/hardware/quikot_client.ts)."}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":25,"output_tokens":10,"reasoning_output_tokens":0,"cache_write_input_tokens":0}}

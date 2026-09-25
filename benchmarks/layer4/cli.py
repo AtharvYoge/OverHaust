@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from benchmarks.layer4.matrix import PILOT_SEED
+from benchmarks.layer4.matrix import FULL_NAME, PILOT_NAME, PILOT_SEED
 from benchmarks.layer4.runner import PreflightError, RunConfig, run_pilot
 
 
@@ -15,8 +15,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m benchmarks.layer4.pilot",
         description=(
-            "Run the Layer 4 Codex instrumentation pilot "
-            "(8 isolated sessions). This does not report a product result."
+            "Run a Layer 4 Codex instrumentation preset. "
+            "pilot (default) is 8 isolated sessions; full is 20. "
+            "This does not report a product result."
+        ),
+    )
+    parser.add_argument(
+        "--preset",
+        choices=(PILOT_NAME, FULL_NAME),
+        default=PILOT_NAME,
+        help=(
+            "pilot: sym_generate_kot and arch_kitchen_hardware × "
+            "baseline/overhaust × 2 reps (8 sessions, default). "
+            "full: all 5 Layer 3 tasks × baseline/overhaust × 2 reps "
+            "(20 sessions)."
         ),
     )
     parser.add_argument(
@@ -24,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("LAYER4_CODEX_MODEL") or None,
         help=(
             "Model passed to every session as `codex exec --model`. "
-            "Required for a comparable pilot. Defaults to LAYER4_CODEX_MODEL."
+            "Required for a comparable run. Defaults to LAYER4_CODEX_MODEL."
         ),
     )
     parser.add_argument("--seed", type=int, default=PILOT_SEED)
@@ -39,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Write the 8-session plan and fixture hash. Do not launch Codex.",
+        help="Write the session plan and fixture hash. Do not launch Codex.",
     )
     return parser
 
@@ -56,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         results_dir=args.results_dir,
         dry_run=args.dry_run,
         codex_bin=args.codex_bin,
+        preset=args.preset,
     )
     try:
         report = run_pilot(config)
