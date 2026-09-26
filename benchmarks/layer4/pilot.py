@@ -1,6 +1,7 @@
 """Codex instrumentation runs.
 
-Default preset is the 8-session pilot. ``--preset full`` is 20 sessions.
+Default preset for Codex is the 8-session pilot. ``--agent cursor`` pilot
+is 10 sessions. ``--preset full`` is 20 sessions for either agent.
 ``--conditions baseline`` keeps only the baseline sessions of that same plan.
 
     python3 -m benchmarks.layer4.pilot --model <model>

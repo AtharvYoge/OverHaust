@@ -1,9 +1,9 @@
 # Layer 4 — real-agent session instrumentation
 
-Measures isolated coding-agent sessions on the Layer 3 tasks. Codex CLI is
-the first adapter. Cursor and Claude Code are not implemented; the
-`AgentAdapter` interface and `Layer4SessionResult` schema are what they will
-share.
+Measures isolated coding-agent sessions on the Layer 3 tasks. Codex CLI and
+Cursor's headless `cursor-agent` are the adapters. Claude Code is not
+implemented. Both adapters share `Layer4SessionResult`. Cursor does not reuse
+Codex token accounting: `cacheReadTokens` is a separate bucket.
 
 This is not a product benchmark result. It does not modify Layer 3, retrieval,
 or `invoke_context_request`.
@@ -125,16 +125,58 @@ Baseline is the same command with no hook installed.
 benchmarks/layer4/
   PROTOCOL.md          isolation, validity, missing data
   schema.py            Layer4SessionResult
-  adapters.py          interface; Cursor and Claude Code are refused
+  adapters.py          Codex and Cursor; Claude Code is refused
   codex_adapter.py     map a captured Codex session onto the schema
   codex_parse.py       exec JSONL, rollout, hook debug
+  cursor_adapter.py    map a captured cursor-agent session onto the schema
+  cursor_parse.py      stream-json, usage, tool calls
+  cursor_condition.py  sessionStart hook, isolation, cli-config guard
+  cursor_runner.py     Cursor matrix and layer4-cursor-* reports
+  cursor_store.py      best-effort local session-store scan
   condition.py         baseline vs OverHaust Codex home
   matrix.py            pilot and full presets, pair order
-  runner.py            execute the matrix, write timestamped results
+  runner.py            execute the Codex matrix, write timestamped results
   cli.py / pilot.py    python3 -m benchmarks.layer4.pilot
-  fixtures/            recorded Codex output for unit tests
+  fixtures/            recorded Codex and Cursor output for unit tests
   test_layer4.py
+  test_cursor_layer4.py
 ```
+
+## Cursor
+
+Same tasks, prompts, and correctness rubric as Codex. The entry point is
+`--agent cursor`. Cursor pilot is 5 tasks × 2 conditions × 1 rep (10
+sessions). Cursor full is 5 × 2 × 2 (20). Order uses the same seeded pair
+plan as Codex. The default model is `gpt-5.5-medium`.
+
+```bash
+python3 -m benchmarks.layer4.pilot --agent cursor --dry-run
+python3 -m benchmarks.layer4.pilot --agent cursor --preset pilot --model gpt-5.5-medium --isolation isolated-home
+python3 -m benchmarks.layer4.pilot --agent cursor --preset full --model gpt-5.5-medium --isolation isolated-home
+python3 -m benchmarks.layer4.pilot --agent cursor --preflight --isolation isolated-home --model gpt-5.5-medium
+```
+
+OverHaust context comes from `scripts/integrations/overhaust_cursor_session_start_hook.py`,
+which calls `invoke_context_request`. `sessionStart` stdin has no prompt, so
+the harness writes a per-session JSON file and passes its path in
+`OVERHAUST_CURSOR_PROMPT_FILE`. The hook accepts that file only when the
+harness session id and the workspace root match. Baseline has no hooks file.
+Neither workspace gets OverHaust rules or MCP config.
+
+`--isolation isolated-home` uses an empty temp HOME and `CURSOR_API_KEY`.
+Its preflight does not call `mcp disable`. `--isolation mcp-toggle` runs
+`cursor-agent mcp disable overhaust` with cwd set to each session workspace,
+then removes only the `~/.cursor/projects/<slug>` directory that command
+created. It does not modify a slug that already existed. Preflight checks
+only the selected strategy, and every preflight command uses a throwaway
+directory as cwd. `mcp list` and `mcp disable` start MCP servers, so each
+workspace calls each of them once. Preflight does not start a model session.
+
+Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
+
+Cursor `cacheReadTokens` is not included in `inputTokens`. Do not compare
+Cursor figures to Codex figures. Reports are
+`benchmarks/results/layer4-cursor-<UTC timestamp>.json` and `.md`.
 
 ## Tests
 

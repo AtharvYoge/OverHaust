@@ -617,10 +617,9 @@ def test_dry_run_does_not_launch_codex(tmp_path: Path):
     assert Path(report["_output_paths"]["json"]).is_file()
 
 
-def test_cursor_and_claude_adapters_are_not_built():
+def test_cursor_adapter_is_registered_and_claude_is_not():
     assert require_adapter("codex").agent_id == "codex"
-    with pytest.raises(UnsupportedAgent):
-        require_adapter("cursor")
+    assert require_adapter("cursor").agent_id == "cursor"
     with pytest.raises(UnsupportedAgent):
         require_adapter("claude_code")
 

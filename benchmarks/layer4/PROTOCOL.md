@@ -214,3 +214,129 @@ directory as other harness runs):
 
 If a stamp is already taken, the writer appends `-1`, `-2`, … and does not
 overwrite. Failed sessions stay in the JSON.
+
+## Cursor adapter
+
+Cursor is a separate adapter (`--agent cursor`). It does not use Codex homes,
+Codex exec JSONL, or Codex token accounting. Codex behavior in this file is
+unchanged.
+
+| Preset | Matrix | Sessions |
+|--------|--------|----------|
+| `pilot` | all 5 Layer 3 initial tasks × `baseline`, `overhaust` × 1 rep | 10 |
+| `full` | those tasks × both conditions × 2 reps | 20 |
+
+Order is the same pair-counterbalanced generator as Codex (`random.Random(seed)`).
+With one rep, each task has one pair and the within-pair order is the odd-rep
+rule. Default model is `gpt-5.5-medium`. There is no plain `gpt-5.5` id.
+
+The verified headless command is:
+
+`cursor-agent -p --output-format stream-json --trust --model <id> '<prompt>'`
+
+with stdin from `/dev/null`. `--trust` is required. `--force` is not added.
+
+### Condition
+
+| Condition | What changes |
+|-----------|----------------|
+| `baseline` | Fresh copy of the LabKOT fixture. No `.cursor/hooks.json`. No OverHaust rules or MCP config. |
+| `overhaust` | Same argv, model, and prompt. The copy contains only `.cursor/hooks.json` with a `sessionStart` hook: `scripts/integrations/overhaust_cursor_session_start_hook.py`. |
+
+The hook calls `invoke_context_request(project_id, prompt, memory_store=...)`.
+`sessionStart` stdin has no user prompt, and Cursor's `session_id` does not
+exist until the hook runs, so the harness cannot key the prompt on that id.
+It writes a mode-0600 JSON file in the session directory
+(`harness_session_id`, `workspace_root`, `prompt`) and sets
+`OVERHAUST_CURSOR_PROMPT_FILE` plus `OVERHAUST_CURSOR_SESSION_ID` on that
+child only. The prompt is not an environment variable. The hook reads the
+file only when the harness session id matches and `workspace_root` is one of
+stdin `workspace_roots`. On a resolver or seam error it prints `{}`, writes
+a debug record, and logs the error. It does not inject empty context.
+
+The debug record has `fired`, `error`, exact `context_bytes`, ESTIMATED
+`estimated_context_tokens` from `TokenEstimator`, and exact `latency_ms`
+(hook wall time). Retrieval latency stays unavailable.
+
+### Isolation
+
+The only intended difference between conditions is that hook. Neither
+condition may have OverHaust MCP tools. Two strategies:
+
+1. `isolated-home` — per-session temp HOME, no copied credentials, auth from
+   `CURSOR_API_KEY`. Preflight runs `cursor-agent mcp list` in a temp HOME
+   that contains only a sentinel server. The strategy is usable only when
+   that list shows the sentinel and does not show `overhaust`. That preflight
+   does not call `mcp disable`.
+2. `mcp-toggle` — for each session, both conditions the same way,
+   `cursor-agent mcp disable overhaust` with cwd set to that session's fresh
+   temp workspace, then `mcp list` from the same cwd. CLI 2026.09.26 writes
+   the server name to `~/.cursor/projects/<slug>/mcp-disabled.json`, and the
+   slug is derived from `process.cwd()`. Disabling from the user home does
+   not hide OverHaust in the session workspace. The harness diffs
+   `~/.cursor/projects` before and after the command and deletes only slug
+   directories that appeared for that call. It does not modify a slug that
+   already existed. After the session, including on failure or interrupt, it
+   checks that those new directories are gone. Other global MCP servers stay.
+   That is a confounder of this strategy, not of `isolated-home`.
+
+`mcp list` and `mcp disable` start configured MCP servers. Each workspace
+calls each command once. Cleanup does not call them again.
+
+Preflight (`--preflight`) checks the CLI, auth, whether the model is listed,
+and only the strategy named by `--isolation`. Every preflight command uses a
+throwaway directory as cwd. It does not use the user home or a project
+directory. Before any CLI call it snapshots `cli-config.json`,
+`agent-cli-state.json`, `statsig-cache.json`, `mcp.json`, and the
+`~/.cursor/projects` listing, and it restores those files and deletes slug
+directories created during the probe, including when a probe raises.
+Pre-existing slugs are not modified. After restore, `mcp.json` must be
+byte-identical; that check is in the preflight output. If the isolated-home
+probe's temp HOME is ignored and the CLI writes a slug under the real
+`~/.cursor/projects`, that slug is removed and isolated-home is unusable.
+The mcp-toggle probe disables OverHaust in its own throwaway workspace and
+deletes only the slug that command created. It does not pass `-p`.
+
+If an OverHaust MCP tool is available or called in either condition, that
+session is invalid and the run stops before the next session. The report is
+still written and the Cursor state files are restored.
+
+`--model` rewrites `~/.cursor/cli-config.json` keys `model`, `selectedModel`,
+`modelParameters`, `hasChangedDefaultModel`, and `modelSelectionHistory`.
+The run also rewrites `agent-cli-state.json` and `statsig-cache.json`. The
+harness snapshots those files and restores them afterward, including when a
+session fails.
+
+### Telemetry
+
+`cacheReadTokens` is a separate bucket. It is not included in `inputTokens`
+and is not subtracted. Reasoning tokens and a provider total are
+UNAVAILABLE. A sum of exact components is labeled DERIVED and is not stored
+as `agent_total_tokens`. Missing numbers stay null. Files inspected are
+EXACT unique `readToolCall` paths, or UNAVAILABLE when tool events were not
+parsed. They are never inferred from the prompt.
+
+Do not compare Cursor figures to Codex figures.
+
+### Injection check
+
+Hook debug is required for an OverHaust session to be valid. When
+`~/.cursor/chats/<hash>/<session>/store.db` can be scanned, the marker
+`<!-- overhaust-context -->` must be present for OverHaust and absent for
+baseline, and an OverHaust tool catalog entry or tool call marks the session
+invalid. If the store cannot be parsed, verification is `hook-log-only`.
+
+### Validity and means
+
+Invalid sessions (bad snapshot, wrong hooks file, hook error, empty context,
+MCP tool available or called, marker mismatch, overhaust still listed after
+a workspace disable, a pre-existing project slug touched, or slug cleanup
+not verified) stay in the dataset and are excluded from means. Failed
+outcomes and incorrect answers stay in the dataset and in the primary means.
+Timeouts are recorded. Unavailable figures are not treated as zero.
+
+Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
+
+Reports: `benchmarks/results/layer4-cursor-<UTC stamp>.json` and `.md`.
+Names are never overwritten. This remains an instrumentation record, not a
+product claim.
