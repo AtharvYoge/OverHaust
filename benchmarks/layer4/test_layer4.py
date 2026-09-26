@@ -7,6 +7,7 @@ Uses recorded Codex JSONL and a fake process runner. No network and no API key.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -22,15 +23,18 @@ from benchmarks.layer4.codex_parse import (
     parse_rollout_jsonl,
 )
 from benchmarks.layer4.condition import (
+    PROMPT_CACHE_POLICY,
     build_exec_command,
     build_exec_env,
     prepare_codex_home,
 )
 from benchmarks.layer4.matrix import (
+    FULL_TASK_IDS,
     PILOT_CONDITIONS,
     PILOT_REPS,
     PILOT_SEED,
     PILOT_TASK_IDS,
+    load_full_tasks,
     load_pilot_tasks,
     plan_matrix,
 )
@@ -38,7 +42,9 @@ from benchmarks.layer4.runner import (
     Layer4Workspace,
     ProcessResult,
     RunConfig,
+    agent_behavior,
     allocate_result_paths,
+    cache_analysis,
     diff_snapshot_paths,
     run_pilot,
 )
@@ -53,6 +59,9 @@ MISSING_CACHED = (FIXTURES / "codex_exec_missing_cached.jsonl").read_text(encodi
 FAILED = (FIXTURES / "codex_exec_failed.jsonl").read_text(encoding="utf-8")
 ROLLOUT = (FIXTURES / "codex_rollout.jsonl").read_text(encoding="utf-8")
 HOOK = (FIXTURES / "hook_debug.jsonl").read_text(encoding="utf-8")
+ZERO_TOOLS = (FIXTURES / "codex_exec_zero_tools.jsonl").read_text(encoding="utf-8")
+TWO_TOOLS = (FIXTURES / "codex_exec_two_tools.jsonl").read_text(encoding="utf-8")
+PROTOCOL = Path(__file__).resolve().parent / "PROTOCOL.md"
 
 
 def _task(task_id: str = "sym_generate_kot"):
@@ -282,6 +291,34 @@ def test_round_trip_schema():
     assert again.to_dict() == result.to_dict()
 
 
+def _assert_pairs_are_adjacent_and_balanced(plans, *, reps: int):
+    by_pair = {}
+    for plan in plans:
+        by_pair.setdefault(plan.pair_id, []).append(plan)
+    assert len(by_pair) * 2 == len(plans)
+    orders_by_task = {}
+    for pair_id, members in by_pair.items():
+        assert len(members) == 2
+        ordered = sorted(members, key=lambda item: item.execution_order)
+        assert ordered[1].execution_order == ordered[0].execution_order + 1
+        assert ordered[0].execution_order % 2 == 0
+        assert [item.order_in_pair for item in ordered] == [1, 2]
+        assert ordered[0].condition_order == ordered[1].condition_order
+        assert [item.condition for item in ordered] == ordered[0].condition_order.split("->")
+        assert ordered[0].seed == ordered[1].seed
+        assert ordered[0].rep == ordered[1].rep
+        assert pair_id == f"{ordered[0].task_id}-r{ordered[0].rep}"
+        orders_by_task.setdefault(ordered[0].task_id, []).append(ordered[0].condition_order)
+    for _task_id, orders in orders_by_task.items():
+        assert len(orders) == reps
+        counts = Counter(orders)
+        assert set(counts) <= {"baseline->overhaust", "overhaust->baseline"}
+        assert abs(counts["baseline->overhaust"] - counts["overhaust->baseline"]) <= 1
+        if reps == 2:
+            assert counts["baseline->overhaust"] == 1
+            assert counts["overhaust->baseline"] == 1
+
+
 def test_pilot_matrix_is_eight_sessions_and_stable():
     tasks = load_pilot_tasks()
     assert [task.task_id for task in tasks] == list(PILOT_TASK_IDS)
@@ -299,6 +336,8 @@ def test_pilot_matrix_is_eight_sessions_and_stable():
     assert [(p.task_id, p.condition, p.rep) for p in first] != [
         (p.task_id, p.condition, p.rep) for p in shuffled
     ]
+    _assert_pairs_are_adjacent_and_balanced(first, reps=PILOT_REPS)
+    _assert_pairs_are_adjacent_and_balanced(shuffled, reps=PILOT_REPS)
 
 
 def test_condition_toggle_uses_the_existing_hook_and_does_not_alter_the_prompt(tmp_path: Path):
@@ -332,6 +371,8 @@ def test_condition_toggle_uses_the_existing_hook_and_does_not_alter_the_prompt(t
     assert "<!-- overhaust-context -->" not in " ".join(command)
     assert "--json" in command
     assert "--dangerously-bypass-hook-trust" in command
+    assert not any("cache" in part.lower() for part in command if part.startswith("--"))
+    assert command[-1] == task.prompt
     assert command[command.index("--sandbox") + 1] == "workspace-write"
     env = build_exec_env(
         {"OPENAI_API_KEY": "sk-test-secret", "PATH": "/usr/bin"},
@@ -500,6 +541,33 @@ def test_pilot_runner_records_eight_sessions_from_fake_codex(tmp_path: Path):
     assert raw.is_file()
     assert raw.parent == json_path.parent
     assert raw.name.startswith(json_path.stem + "-")
+    planned_ids = [entry["session_id"] for entry in report["planned_execution_order"]]
+    actual_ids = [entry["session_id"] for entry in report["actual_execution_order"]]
+    assert actual_ids == planned_ids
+    assert actual_ids == [session["session_id"] for session in sessions]
+    for session in sessions:
+        assert session["seed"] == PILOT_SEED
+        assert session["order_in_pair"] in (1, 2)
+        assert session["condition_order"] in {"baseline->overhaust", "overhaust->baseline"}
+        assert session["pair_id"] == f"{session['task_id']}-r{session['rep']}"
+        assert session["agent_input_tokens"]["value"] == 1000
+        assert session["agent_cached_input_tokens"]["value"] == 200
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert PROMPT_CACHE_POLICY in md
+    assert "| Tools |" in md
+    baseline = next(
+        row for row in report["cache_analysis"]["by_condition"] if row["condition"] == "baseline"
+    )
+    assert baseline["n_sessions"] == 4
+    assert baseline["mean_input_tokens"] == 1000
+    assert baseline["mean_cached_input_tokens"] == 200
+    assert baseline["cached_input_rate"] == 0.2
+    assert baseline["mean_total_tokens"] == 1050
+    over = next(
+        row for row in report["cache_analysis"]["by_condition"] if row["condition"] == "overhaust"
+    )
+    assert over["mean_input_tokens"] == 1000
+    assert over["mean_input_tokens"] != 1000 + 310
 
 
 def test_dry_run_does_not_launch_codex(tmp_path: Path):
@@ -533,9 +601,15 @@ def test_dry_run_does_not_launch_codex(tmp_path: Path):
         )
     )
     assert report["mode"] == "dry_run"
+    assert report["preset"] == "pilot"
     assert report["recorded_session_count"] == 0
     assert report["planned_session_count"] == 8
     assert report["dropped_session_count"] == 0
+    assert len(report["planned_execution_order"]) == 8
+    assert report["actual_execution_order"] == []
+    assert report["cache_control_note"] == PROMPT_CACHE_POLICY
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert PROMPT_CACHE_POLICY in md
     assert Path(report["_output_paths"]["json"]).is_file()
 
 
@@ -637,3 +711,381 @@ def test_pinned_model_is_recorded_on_every_session(tmp_path: Path):
     assert report["sessions"][0]["agent"] == "codex"
     assert report["sessions"][0]["model"] == "gpt-5.4"
     assert report["sessions"][0]["model_source"] == "cli_flag"
+
+
+def _workspace(tmp_path: Path, tasks):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    snapshot = capture_repository_snapshot(str(root))
+
+    def builder(_tasks):
+        return Layer4Workspace(
+            root=root,
+            db_path=str(tmp_path / "bench.db"),
+            project_id=tasks[0].project_id,
+            snapshot=snapshot,
+            snapshot_hash=snapshot["tree_hash"],
+            repo_size="medium",
+        )
+
+    return builder
+
+
+def _session_for(task_id: str, **overrides):
+    task = _task(task_id)
+    capture = _capture(
+        task_id=task.task_id,
+        prompt=task.prompt,
+        command=["codex", "exec", "--json", task.prompt],
+        session_id=overrides.pop("session_id", f"{task.task_id}-baseline-r0"),
+        **overrides,
+    )
+    return session_from_capture(capture, task)
+
+
+def test_condition_order_is_balanced_deterministic_and_adjacent():
+    tasks = load_pilot_tasks()
+    first = plan_matrix(tasks, seed=PILOT_SEED)
+    again = plan_matrix(tasks, seed=PILOT_SEED)
+    assert [plan.to_dict() for plan in first] == [plan.to_dict() for plan in again]
+    _assert_pairs_are_adjacent_and_balanced(first, reps=2)
+    other = plan_matrix(tasks, seed=PILOT_SEED + 7)
+    assert [(plan.pair_id, plan.condition_order, plan.execution_order) for plan in first] != [
+        (plan.pair_id, plan.condition_order, plan.execution_order) for plan in other
+    ]
+    for seed in (1, 2, 99):
+        _assert_pairs_are_adjacent_and_balanced(plan_matrix(tasks, seed=seed), reps=2)
+    one_task = tasks[:1]
+    for reps in (1, 3, 5):
+        planned = plan_matrix(one_task, reps=reps, seed=PILOT_SEED)
+        _assert_pairs_are_adjacent_and_balanced(planned, reps=reps)
+        assert len(planned) == reps * 2
+
+
+def test_full_preset_has_twenty_sessions_with_balanced_composition(tmp_path: Path):
+    tasks = load_full_tasks()
+    assert [task.task_id for task in tasks] == list(FULL_TASK_IDS)
+    assert len(tasks) == 5
+    plans = plan_matrix(tasks, seed=PILOT_SEED)
+    assert len(plans) == 20
+    keys = Counter((plan.task_id, plan.condition, plan.rep) for plan in plans)
+    assert len(keys) == 20
+    for task_id in FULL_TASK_IDS:
+        for condition in ("baseline", "overhaust"):
+            for rep in (0, 1):
+                assert keys[(task_id, condition, rep)] == 1
+    _assert_pairs_are_adjacent_and_balanced(plans, reps=2)
+    assert [plan.execution_order for plan in plans] == list(range(20))
+    # Locked to random.Random(1) pair counterbalancing of the five Layer 3 tasks.
+    assert [plan.session_id for plan in plans] == [
+        "cross_order_to_printer-overhaust-r0",
+        "cross_order_to_printer-baseline-r0",
+        "flow_order_to_kitchen-overhaust-r1",
+        "flow_order_to_kitchen-baseline-r1",
+        "flow_order_to_kitchen-baseline-r0",
+        "flow_order_to_kitchen-overhaust-r0",
+        "cross_order_to_printer-baseline-r1",
+        "cross_order_to_printer-overhaust-r1",
+        "arch_kitchen_hardware-overhaust-r0",
+        "arch_kitchen_hardware-baseline-r0",
+        "arch_kitchen_hardware-baseline-r1",
+        "arch_kitchen_hardware-overhaust-r1",
+        "sym_generate_kot-baseline-r0",
+        "sym_generate_kot-overhaust-r0",
+        "impact_change_generate_kot-overhaust-r0",
+        "impact_change_generate_kot-baseline-r0",
+        "sym_generate_kot-overhaust-r1",
+        "sym_generate_kot-baseline-r1",
+        "impact_change_generate_kot-baseline-r1",
+        "impact_change_generate_kot-overhaust-r1",
+    ]
+
+    report = run_pilot(
+        RunConfig(
+            preset="full",
+            dry_run=True,
+            seed=PILOT_SEED,
+            results_dir=tmp_path / "results",
+            env={},
+            command_runner=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("dry run launched Codex")
+            ),
+            workspace_builder=_workspace(tmp_path, tasks),
+            stamp="full-dry",
+        )
+    )
+    assert report["preset"] == "full"
+    assert report["mode"] == "dry_run"
+    assert report["planned_session_count"] == 20
+    assert report["recorded_session_count"] == 0
+    assert report["actual_execution_order"] == []
+    assert len(report["planned_execution_order"]) == 20
+    assert [entry["session_id"] for entry in report["planned_execution_order"]] == [
+        plan.session_id for plan in plans
+    ]
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert PROMPT_CACHE_POLICY in md
+    assert PROMPT_CACHE_POLICY in PROTOCOL.read_text(encoding="utf-8")
+
+
+def test_full_preset_records_twenty_sessions(tmp_path: Path):
+    tasks = load_full_tasks()
+    seen = []
+
+    def fake_runner(command, env, cwd, timeout):
+        seen.append(command[-1])
+        return ProcessResult(0, COMPLETED, "", 5, False)
+
+    report = run_pilot(
+        RunConfig(
+            preset="full",
+            model="gpt-4o-mini",
+            seed=PILOT_SEED,
+            results_dir=tmp_path / "results",
+            codex_bin="codex",
+            env={"OPENAI_API_KEY": "sk-test-secret"},
+            command_runner=fake_runner,
+            workspace_builder=_workspace(tmp_path, tasks),
+            probe=CodexProbe("codex", "0.146.0", "codex_cli_version", "codex"),
+            stamp="full-live",
+        )
+    )
+    assert report["mode"] == "full"
+    assert report["planned_session_count"] == 20
+    assert report["recorded_session_count"] == 20
+    assert report["dropped_session_count"] == 0
+    assert len(seen) == 20
+    composition = Counter(
+        (session["task_id"], session["condition"], session["rep"])
+        for session in report["sessions"]
+    )
+    assert len(composition) == 20
+    assert set(composition) == {
+        (task_id, condition, rep)
+        for task_id in FULL_TASK_IDS
+        for condition in ("baseline", "overhaust")
+        for rep in (0, 1)
+    }
+    assert [entry["session_id"] for entry in report["actual_execution_order"]] == [
+        entry["session_id"] for entry in report["planned_execution_order"]
+    ]
+    for entry in report["actual_execution_order"]:
+        assert entry["seed"] == PILOT_SEED
+        assert entry["order_in_pair"] in (1, 2)
+        assert "->" in entry["condition_order"]
+
+
+def test_run_result_records_planned_and_actual_order_fields(tmp_path: Path):
+    tasks = load_pilot_tasks()
+    seen = []
+
+    def fake_runner(command, env, cwd, timeout):
+        seen.append(Path(env["CODEX_HOME"]).parent.name)
+        return ProcessResult(0, COMPLETED, "", 4, False)
+
+    report = run_pilot(
+        RunConfig(
+            model="gpt-4o-mini",
+            seed=PILOT_SEED,
+            results_dir=tmp_path / "results",
+            codex_bin="codex",
+            env={"OPENAI_API_KEY": "sk-test-secret"},
+            command_runner=fake_runner,
+            workspace_builder=_workspace(tmp_path, tasks),
+            probe=CodexProbe("codex", "0.146.0", "codex_cli_version", "codex"),
+            stamp="order",
+        )
+    )
+    assert seen == [entry["session_id"] for entry in report["actual_execution_order"]]
+    assert seen == [entry["session_id"] for entry in report["planned_execution_order"]]
+    by_id = {session["session_id"]: session for session in report["sessions"]}
+    for entry in report["planned_execution_order"]:
+        session = by_id[entry["session_id"]]
+        assert session["pair_id"] == entry["pair_id"]
+        assert session["order_in_pair"] == entry["order_in_pair"]
+        assert session["condition_order"] == entry["condition_order"]
+        assert session["seed"] == entry["seed"] == PILOT_SEED
+        assert session["execution_order"] == entry["execution_order"]
+
+
+def test_cache_analysis_math_excludes_invalid_and_unavailable():
+    rollout = ROLLOUT.replace('"total_tokens":1050', '"total_tokens":1234', 1)
+    sym = "sym_generate_kot"
+    arch = "arch_kitchen_hardware"
+    sessions = [
+        _session_for(sym, stdout=COMPLETED, session_id=f"{sym}-baseline-r0", rep=0),
+        _session_for(
+            sym,
+            stdout=COMPLETED,
+            rollout_text=rollout,
+            session_id=f"{sym}-baseline-r1",
+            rep=1,
+        ),
+        _session_for(
+            sym,
+            stdout=MISSING_CACHED,
+            session_id=f"{sym}-baseline-r2",
+            rep=2,
+        ),
+        _session_for(
+            sym,
+            stdout=COMPLETED,
+            hook_debug=HOOK,
+            session_id=f"{sym}-baseline-invalid",
+            rep=3,
+        ),
+        _session_for(
+            arch,
+            stdout=TWO_TOOLS,
+            session_id=f"{arch}-baseline-r0",
+            rep=0,
+        ),
+        _session_for(
+            sym,
+            stdout=ZERO_TOOLS,
+            condition="overhaust",
+            session_id=f"{sym}-overhaust-r0",
+            hook_debug=HOOK,
+            integration_path="codex_user_prompt_submit_hook",
+            hook_command='python3 "/repo/scripts/integrations/overhaust_user_prompt_hook.py"',
+        ),
+    ]
+    assert sessions[0].valid and sessions[0].agent_total_tokens.is_unavailable
+    assert sessions[1].agent_total_tokens.value == 1234
+    assert sessions[2].valid and sessions[2].agent_cached_input_tokens.is_unavailable
+    assert sessions[2].tool_calls.value == 0
+    assert sessions[3].valid is False
+    assert sessions[4].valid is True
+    assert sessions[4].tool_calls.value == 2
+    assert sessions[5].valid is True
+    assert sessions[5].overhaust_context_tokens.value == 310
+    assert sessions[5].overhaust_context_tokens.kind == "estimated"
+    assert sessions[5].agent_input_tokens.value == 1000
+    assert sessions[5].agent_cached_input_tokens.value == 0
+    assert sessions[5].tool_calls.value == 0
+
+    analysis = cache_analysis(sessions)
+    assert "overhaust_context" not in json.dumps(analysis)
+    by_key = {
+        (row["task_id"], row["condition"]): row
+        for row in analysis["by_task_condition"]
+    }
+    sym_base = by_key[(sym, "baseline")]
+    assert sym_base["n_sessions"] == 3
+    assert sym_base["n_invalid_excluded"] == 1
+    assert sym_base["mean_input_tokens"] == 670
+    assert sym_base["n_input"] == 3
+    assert sym_base["input_unavailable"] == 0
+    assert sym_base["mean_cached_input_tokens"] == 200
+    assert sym_base["n_cached_input"] == 2
+    assert sym_base["cached_input_unavailable"] == 1
+    assert sym_base["cached_input_rate"] == 0.2
+    assert sym_base["n_cached_input_rate"] == 2
+    assert sym_base["cached_input_rate_excluded"] == 1
+    assert sym_base["mean_output_tokens"] == 34
+    assert sym_base["mean_total_tokens"] == 1234
+    assert sym_base["n_total"] == 1
+    assert sym_base["total_unavailable"] == 2
+    assert sym_base["mean_input_tokens"] != 800
+
+    arch_base = by_key[(arch, "baseline")]
+    assert arch_base["n_sessions"] == 1
+    assert arch_base["mean_input_tokens"] == 100
+    assert arch_base["mean_cached_input_tokens"] == 25
+    assert arch_base["cached_input_rate"] == 0.25
+    assert arch_base["mean_output_tokens"] == 10
+    assert arch_base["mean_total_tokens"] is None
+    assert arch_base["total_unavailable"] == 1
+
+    sym_over = by_key[(sym, "overhaust")]
+    assert sym_over["n_sessions"] == 1
+    assert sym_over["mean_input_tokens"] == 1000
+    assert sym_over["mean_cached_input_tokens"] == 0
+    assert sym_over["cached_input_rate"] == 0.0
+    assert sym_over["mean_output_tokens"] == 50
+    assert sym_over["mean_total_tokens"] is None
+    assert sym_over["total_unavailable"] == 1
+    assert sym_over["mean_input_tokens"] != 1310
+
+    by_condition = {row["condition"]: row for row in analysis["by_condition"]}
+    baseline = by_condition["baseline"]
+    assert baseline["n_sessions"] == 4
+    assert baseline["n_invalid_excluded"] == 1
+    assert baseline["mean_input_tokens"] == 527.5
+    assert baseline["n_cached_input"] == 3
+    assert baseline["cached_input_unavailable"] == 1
+    assert baseline["cached_input_rate"] == pytest.approx(425 / 2100)
+    assert baseline["mean_output_tokens"] == 28
+    assert baseline["mean_total_tokens"] == 1234
+    assert baseline["n_total"] == 1
+    assert baseline["total_unavailable"] == 3
+    over = by_condition["overhaust"]
+    assert over["mean_input_tokens"] == 1000
+    assert over["n_invalid_excluded"] == 0
+
+    behavior = agent_behavior(sessions)
+    behavior_key = {
+        (row["task_id"], row["condition"]): row
+        for row in behavior["by_task_condition"]
+    }
+    assert behavior_key[(sym, "baseline")]["mean_tool_calls"] == pytest.approx(2 / 3)
+    assert behavior_key[(sym, "baseline")]["zero_tool_call_sessions"] == 1
+    assert behavior_key[(sym, "baseline")]["n_invalid_excluded"] == 1
+    assert behavior_key[(sym, "baseline")]["tool_calls_unavailable"] == 0
+    assert behavior_key[(arch, "baseline")]["mean_tool_calls"] == 2
+    assert behavior_key[(arch, "baseline")]["zero_tool_call_sessions"] == 0
+    assert behavior_key[(sym, "overhaust")]["mean_tool_calls"] == 0
+    assert behavior_key[(sym, "overhaust")]["zero_tool_call_sessions"] == 1
+
+    empty = cache_analysis([])
+    assert empty["by_task_condition"] == []
+    assert empty["by_condition"] == []
+
+
+def test_markdown_session_table_includes_tool_call_counts(tmp_path: Path):
+    tasks = load_pilot_tasks()
+
+    def fake_runner(command, env, cwd, timeout):
+        home = Path(env["CODEX_HOME"])
+        if (home / "hooks.json").exists():
+            Path(env["OVERHAUST_INTEGRATION_DEBUG_FILE"]).write_text(HOOK, encoding="utf-8")
+            return ProcessResult(0, ZERO_TOOLS, "", 4, False)
+        return ProcessResult(0, COMPLETED, "", 4, False)
+
+    report = run_pilot(
+        RunConfig(
+            model="gpt-4o-mini",
+            seed=PILOT_SEED,
+            results_dir=tmp_path / "results",
+            codex_bin="codex",
+            env={"OPENAI_API_KEY": "sk-test-secret"},
+            command_runner=fake_runner,
+            workspace_builder=_workspace(tmp_path, tasks),
+            probe=CodexProbe("codex", "0.146.0", "codex_cli_version", "codex"),
+            stamp="tools",
+        )
+    )
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert PROMPT_CACHE_POLICY in md
+    assert "| Order | Session | Task | Condition | Rep | Outcome | Valid | Primary | Input | Cached | Output | Total | Tools |" in md
+    for session in report["sessions"]:
+        if session["condition"] == "overhaust":
+            assert session["valid"] is True
+            assert session["tool_calls"]["value"] == 0
+        else:
+            assert session["tool_calls"]["value"] == 1
+    session_section = md.split("## Sessions", 1)[1].split("## Cache analysis", 1)[0]
+    for line in session_section.splitlines():
+        if not line.startswith("|"):
+            continue
+        if "-overhaust-" in line:
+            assert line.endswith("| 0 |")
+        if "-baseline-" in line:
+            assert line.endswith("| 1 |")
+    over_rows = [
+        row for row in report["agent_behavior"]["by_task_condition"] if row["condition"] == "overhaust"
+    ]
+    assert over_rows
+    assert all(row["zero_tool_call_sessions"] == row["n_sessions"] for row in over_rows)
+    assert all(row["mean_tool_calls"] == 0 for row in over_rows)

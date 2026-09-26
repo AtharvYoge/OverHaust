@@ -25,6 +25,14 @@ INTEGRATION_HOOK = "codex_user_prompt_submit_hook"
 # when no hooks are installed, and it is required for an unattended OverHaust
 # hook (Codex otherwise waits on hook trust). Keeping it on both sides means
 # the permission set does not differ.
+
+# Provider prompt caching is left alone. The exec argv does not disable it,
+# and the task prompt is not rewritten with a nonce or cache-bust prefix.
+PROMPT_CACHE_POLICY = (
+    "Provider-side prompt caching was not independently controlled; "
+    "cached-input usage was recorded and retained as part of the measured "
+    "session usage."
+)
 CODEX_EXEC_PERMISSIONS = {
     "sandbox": "workspace-write",
     "dangerously_bypass_hook_trust": True,
@@ -150,7 +158,12 @@ def build_exec_command(
     model: Optional[str],
     last_message_path: Path,
 ) -> List[str]:
-    """Argv for one non-interactive session. `prompt` is the task text only."""
+    """
+    Argv for one non-interactive session. `prompt` is the task text only.
+
+    No cache-bust flag, nonce, or prompt-cache disable switch is added.
+    Cached input reported by the provider stays a component of input.
+    """
     if prompt == "-" or prompt.startswith("-"):
         raise ValueError(
             "Refusing a prompt Codex would treat as stdin or a flag. "

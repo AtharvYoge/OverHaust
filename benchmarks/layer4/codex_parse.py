@@ -61,12 +61,14 @@ CODEX_USAGE_ACCOUNTING = (
     "cumulative thread totals (ThreadTokenUsage.total): input_tokens, "
     "cached_input_tokens, cache_write_input_tokens, output_tokens, and "
     "reasoning_output_tokens. cached_input_tokens is a subset of input_tokens, "
-    "not an additional bucket. reasoning_output_tokens is stored separately "
-    "and is not subtracted from output_tokens. The exec usage object has no "
-    "total_tokens field, so agent_total_tokens stays unavailable unless a "
-    "session rollout token_count event reports total_tokens. "
+    "not an additional bucket, and is never subtracted from input_tokens. "
+    "reasoning_output_tokens is stored separately and is not subtracted from "
+    "output_tokens. The exec usage object has no total_tokens field, so "
+    "agent_total_tokens stays unavailable unless a session rollout "
+    "token_count event reports total_tokens. The harness never fills that "
+    "gap with input+output or input+cached+output. "
     "OverHaust context tokens are recorded on their own fields and are never "
-    "subtracted from the agent figures."
+    "subtracted from the agent figures or mixed into cache analysis."
 )
 
 FILES_INSPECTED_NOTE = (

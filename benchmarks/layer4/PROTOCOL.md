@@ -1,9 +1,13 @@
 # Layer 4 protocol
 
+Protocol version: `layer4-protocol-v2`.
+
 Layer 4 measures real coding-agent sessions on the same tasks as Layer 3.
 The primary metric is the **agent's own provider token totals** for the
 session. OverHaust's context tokens are reported beside that total and are
 never subtracted from it.
+
+Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
 
 This package is instrumentation. A pilot file is not a product result.
 Layer 3 code, tasks, scoring, retrieval, and canonical result files stay frozen.
@@ -40,13 +44,39 @@ Every cell of the matrix is its own session:
 4. Same task prompt, model flag, sandbox, and timeout.
 5. Same indexed fixture database (`OVERHAUST_DB_PATH`). The production
    `data/overhaust_memory.db` is not the database the hook sees.
-6. Order is `random.Random(seed).shuffle` of the full matrix. The seed is
-   stored on every session. Repetition index `rep` starts at 0.
+6. Condition order is pair counterbalancing, not a global shuffle of
+   sessions. See below. The seed is stored on every session. Repetition
+   index `rep` starts at 0.
 
-The pilot matrix is:
+## Presets
 
-`sym_generate_kot`, `arch_kitchen_hardware` × `baseline`, `overhaust` × 2 reps
-= 8 sessions. Default seed is 1.
+| Preset | Matrix | Sessions |
+|--------|--------|----------|
+| `pilot` (default) | `sym_generate_kot`, `arch_kitchen_hardware` × `baseline`, `overhaust` × 2 reps | 8 |
+| `full` | all 5 Layer 3 initial tasks, in `benchmarks/tasks/initial` filename order (`arch_kitchen_hardware`, `cross_order_to_printer`, `flow_order_to_kitchen`, `impact_change_generate_kot`, `sym_generate_kot`) × `baseline`, `overhaust` × 2 reps | 20 |
+
+Default seed is 1. Dry run writes the plan for either preset and launches nothing.
+
+## Condition order
+
+Each `(task, rep)` is a pair unit. Both sessions of a pair run adjacently.
+
+`random.Random(seed)` assigns order, then shuffles pairs:
+
+1. Walk tasks in preset order. For each task, assign one `condition_order`
+   per rep so the two orders are as even as possible. With `reps=2`, one
+   pair is `overhaust->baseline` and one is `baseline->overhaust`. With an
+   odd rep count, the counts differ by one. The extra slot goes to
+   baseline-first when `randrange(2) == 0`, otherwise to OverHaust-first.
+   That assignment is then shuffled across reps.
+2. Shuffle the pair units with the same generator.
+3. Emit the pair's two sessions back-to-back, `order_in_pair` 1 then 2,
+   in `condition_order`.
+
+Every session result records `pair_id` (`{task_id}-r{rep}`), `order_in_pair`
+(1 or 2), `condition_order`, and `seed`. The run result records
+`planned_execution_order` and `actual_execution_order`. A dry run has a
+planned order and an empty actual order.
 
 ## What counts as a valid session
 
@@ -109,14 +139,47 @@ total. Earlier turns are not summed. The exec usage object has **no**
 `total_tokens` field. This harness does not invent one from
 `input + output` or `input + cached + output`.
 
-`agent_total_tokens` is exact only when a session rollout
-`token_count.total_token_usage.total_tokens` is present **and** the rollout's
-input/output/cached components agree with the exec usage. `last_token_usage`
-is the latest request, not the session total. It is kept under
-`supplemental_telemetry` and is never copied into `agent_*` fields.
+`cached_input_tokens` is a component of `input_tokens`. It is recorded and
+kept. It is never subtracted from input. Prompt caching is not disabled, and
+the harness does not cache-bust the prompt (no nonce, no cache-control flag).
+
+Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
+
+`agent_total_tokens` is exact only when a provider reports `total_tokens`.
+For Codex 0.146.0 that is a session rollout
+`token_count.total_token_usage.total_tokens`, and only when the rollout's
+input/output/cached components agree with the exec usage. If that total is
+absent, the field stays `unavailable`. It is never replaced with a computed
+sum. `last_token_usage` is the latest request, not the session total. It is
+kept under `supplemental_telemetry` and is never copied into `agent_*` fields.
 
 OverHaust `estimated_context_tokens` comes from the hook debug file
-(TokenEstimator). Kind is `estimated`. It is not subtracted from agent tokens.
+(TokenEstimator). Kind is `estimated`. It is not subtracted from agent tokens
+and it is not mixed into cache analysis.
+
+## Cache analysis
+
+JSON and markdown reports include a cache analysis for each task × condition
+and for each condition overall:
+
+- n valid sessions
+- mean input tokens
+- mean cached input tokens
+- cached-input rate (`sum(cached input) / sum(input)`)
+- mean output tokens
+- mean total tokens (provider-reported total only)
+
+Only valid sessions with an exact figure contribute to that figure's mean.
+Invalid sessions, and valid sessions whose figure is unavailable, are excluded
+and the counts are stated. A missing cached-input value is not treated as
+zero. Estimated OverHaust context tokens are not part of these sums.
+
+## Agent behavior
+
+For each task × condition the report gives the mean tool-call count and the
+number of sessions with zero tool calls, using valid sessions with an exact
+`tool_calls` figure. The markdown session table includes each session's
+tool-call count.
 
 ## Secondary metrics
 

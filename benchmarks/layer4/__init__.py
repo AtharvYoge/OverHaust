@@ -8,9 +8,9 @@ reaches the agent only through the existing host integration.
 
 from benchmarks.layer4.schema import Layer4SessionResult, MetricFigure
 
-PROTOCOL_VERSION = "layer4-protocol-v1"
-SCHEMA_VERSION = "layer4-session-v1"
-RUN_SCHEMA_VERSION = "layer4-run-v1"
+PROTOCOL_VERSION = "layer4-protocol-v2"
+SCHEMA_VERSION = "layer4-session-v2"
+RUN_SCHEMA_VERSION = "layer4-run-v2"
 TARGET_CODEX_VERSION = "0.146.0"
 
 __all__ = [

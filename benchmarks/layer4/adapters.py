@@ -40,6 +40,10 @@ class SessionCapture(Protocol):
 
     session_id: str
     agent: str
+    pair_id: str
+    order_in_pair: int
+    condition_order: str
+    seed: int
 
 
 def require_adapter(agent_id: str):

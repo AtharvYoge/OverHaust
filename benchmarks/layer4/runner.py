@@ -31,17 +31,20 @@ from benchmarks.layer4.codex_adapter import (
 from benchmarks.layer4.codex_parse import iter_rollout_files
 from benchmarks.layer4.condition import (
     CODEX_EXEC_PERMISSIONS,
+    PROMPT_CACHE_POLICY,
     build_exec_command,
     build_exec_env,
     detect_auth_mode,
     prepare_codex_home,
 )
 from benchmarks.layer4.matrix import (
+    FULL_NAME,
     PILOT_NAME,
     PILOT_SEED,
     SessionPlan,
-    load_pilot_tasks,
+    load_preset_tasks,
     plan_matrix,
+    preset_reps,
 )
 from benchmarks.layer4.schema import (
     Layer4SessionResult,
@@ -98,6 +101,7 @@ class RunConfig:
     probe: Optional[CodexProbe] = None
     python: Optional[str] = None
     stamp: Optional[str] = None
+    preset: str = PILOT_NAME
 
 
 def _now() -> str:
@@ -269,6 +273,9 @@ def _error_result(
         task_id=plan.task_id,
         rep=plan.rep,
         seed=plan.seed,
+        pair_id=plan.pair_id,
+        order_in_pair=plan.order_in_pair,
+        condition_order=plan.condition_order,
         execution_order=plan.execution_order,
         snapshot_hash=snapshot_hash,
         snapshot_hash_before=None,
@@ -395,6 +402,9 @@ def _execute_session(
         rep=plan.rep,
         seed=plan.seed,
         execution_order=plan.execution_order,
+        pair_id=plan.pair_id,
+        order_in_pair=plan.order_in_pair,
+        condition_order=plan.condition_order,
         snapshot_hash=workspace.snapshot_hash,
         prompt=plan.prompt,
         model_requested=config.model,
@@ -490,11 +500,204 @@ def _summarize(sessions: Sequence[Layer4SessionResult]) -> Dict[str, Any]:
     }
 
 
+CACHE_ANALYSIS_NOTE = (
+    "Counts and means use valid sessions whose figure is exact. Invalid "
+    "sessions are excluded. A missing figure stays unavailable and is not "
+    "treated as zero. cached_input_tokens is a component of input_tokens and "
+    "is not subtracted. cached_input_rate is sum(cached input)/sum(input) over "
+    "valid sessions where both figures are exact. mean total uses the "
+    "provider-reported total only; when that total is absent the mean is "
+    "unavailable and is not replaced with input+output. Estimated OverHaust "
+    "context tokens are not included."
+)
+
+EXECUTION_ORDER_POLICY = (
+    "Each (task, rep) is a pair. Within each task, condition order is balanced "
+    "across reps (one OverHaust-first and one baseline-first when reps is 2; "
+    "counts differ by at most one otherwise). Pair units are shuffled with "
+    "random.Random(seed). The two sessions of a pair run adjacently."
+)
+
+
+def _mean(values: Sequence[int]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _exact_values(
+    sessions: Sequence[Layer4SessionResult],
+    field_name: str,
+) -> tuple[List[int], int]:
+    values: List[int] = []
+    unavailable = 0
+    for session in sessions:
+        figure = getattr(session, field_name)
+        if figure.is_exact and figure.value is not None:
+            values.append(int(figure.value))
+        else:
+            unavailable += 1
+    return values, unavailable
+
+
+def _cache_cell(
+    sessions: Sequence[Layer4SessionResult],
+    *,
+    condition: str,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    valid = [session for session in sessions if session.valid]
+    invalid = len(sessions) - len(valid)
+    input_values, input_unavailable = _exact_values(valid, "agent_input_tokens")
+    cached_values, cached_unavailable = _exact_values(valid, "agent_cached_input_tokens")
+    output_values, output_unavailable = _exact_values(valid, "agent_output_tokens")
+    total_values, total_unavailable = _exact_values(valid, "agent_total_tokens")
+
+    rate_cached: List[int] = []
+    rate_input: List[int] = []
+    rate_excluded = 0
+    for session in valid:
+        cached = session.agent_cached_input_tokens
+        inputted = session.agent_input_tokens
+        if cached.is_exact and inputted.is_exact and cached.value is not None and inputted.value is not None:
+            rate_cached.append(int(cached.value))
+            rate_input.append(int(inputted.value))
+        else:
+            rate_excluded += 1
+    input_sum = sum(rate_input)
+    if not rate_input:
+        rate: Optional[float] = None
+        rate_note = "unavailable: no valid session had exact input and cached input"
+    elif input_sum == 0:
+        rate = None
+        rate_note = "unavailable: sum of exact input tokens is 0"
+    else:
+        rate = sum(rate_cached) / input_sum
+        rate_note = "sum(cached input)/sum(input) over valid sessions where both are exact"
+
+    cell: Dict[str, Any] = {
+        "condition": condition,
+        "n_sessions": len(valid),
+        "n_invalid_excluded": invalid,
+        "mean_input_tokens": _mean(input_values),
+        "n_input": len(input_values),
+        "input_unavailable": input_unavailable,
+        "mean_cached_input_tokens": _mean(cached_values),
+        "n_cached_input": len(cached_values),
+        "cached_input_unavailable": cached_unavailable,
+        "cached_input_rate": rate,
+        "n_cached_input_rate": len(rate_input),
+        "cached_input_rate_excluded": rate_excluded,
+        "cached_input_rate_note": rate_note,
+        "mean_output_tokens": _mean(output_values),
+        "n_output": len(output_values),
+        "output_unavailable": output_unavailable,
+        "mean_total_tokens": _mean(total_values),
+        "n_total": len(total_values),
+        "total_unavailable": total_unavailable,
+    }
+    if task_id is not None:
+        cell["task_id"] = task_id
+    return cell
+
+
+def cache_analysis(sessions: Sequence[Layer4SessionResult]) -> Dict[str, Any]:
+    """
+    Token cache summary for JSON and markdown reports.
+
+    Grouped by task × condition and by condition. Only valid sessions with
+    exact figures contribute to a mean. OverHaust estimated context tokens
+    are not read.
+    """
+    by_task: Dict[Tuple[str, str], List[Layer4SessionResult]] = {}
+    by_condition: Dict[str, List[Layer4SessionResult]] = {}
+    for session in sessions:
+        by_task.setdefault((session.task_id, session.condition), []).append(session)
+        by_condition.setdefault(session.condition, []).append(session)
+
+    task_rows = [
+        _cache_cell(group, task_id=task_id, condition=condition)
+        for (task_id, condition), group in sorted(by_task.items())
+    ]
+    condition_rows = [
+        _cache_cell(by_condition[condition], condition=condition)
+        for condition in ("baseline", "overhaust")
+        if condition in by_condition
+    ]
+    return {
+        "note": CACHE_ANALYSIS_NOTE,
+        "by_task_condition": task_rows,
+        "by_condition": condition_rows,
+    }
+
+
+def agent_behavior(sessions: Sequence[Layer4SessionResult]) -> Dict[str, Any]:
+    """Per task × condition tool-call mean and zero-tool-call session count."""
+    grouped: Dict[Tuple[str, str], List[Layer4SessionResult]] = {}
+    for session in sessions:
+        grouped.setdefault((session.task_id, session.condition), []).append(session)
+
+    rows = []
+    for (task_id, condition), group in sorted(grouped.items()):
+        valid = [session for session in group if session.valid]
+        values, unavailable = _exact_values(valid, "tool_calls")
+        rows.append({
+            "task_id": task_id,
+            "condition": condition,
+            "n_sessions": len(valid),
+            "n_invalid_excluded": len(group) - len(valid),
+            "mean_tool_calls": _mean(values),
+            "n_tool_calls": len(values),
+            "tool_calls_unavailable": unavailable,
+            "zero_tool_call_sessions": sum(1 for value in values if value == 0),
+        })
+    return {
+        "note": (
+            "Mean tool calls and zero-tool-call counts use valid sessions with "
+            "an exact tool_calls figure. Invalid sessions and unavailable "
+            "counts are excluded and counted. A missing count is not zero."
+        ),
+        "by_task_condition": rows,
+    }
+
+
+def _order_entry(source: Any, sequence: int) -> Dict[str, Any]:
+    def read(key: str) -> Any:
+        if isinstance(source, dict):
+            return source[key]
+        return getattr(source, key)
+
+    return {
+        "sequence": sequence,
+        "execution_order": read("execution_order"),
+        "session_id": read("session_id"),
+        "pair_id": read("pair_id"),
+        "order_in_pair": read("order_in_pair"),
+        "condition_order": read("condition_order"),
+        "condition": read("condition"),
+        "task_id": read("task_id"),
+        "rep": read("rep"),
+        "seed": read("seed"),
+    }
+
+
+def _fmt_number(value: Any) -> str:
+    if value is None:
+        return "unavailable"
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
 def _markdown(report: Dict[str, Any]) -> str:
     lines = [
         "# Layer 4 instrumentation run",
         "",
         report["claim_policy"],
+        "",
+        PROMPT_CACHE_POLICY,
         "",
         f"- Mode: `{report['mode']}`",
         f"- Preset: `{report['preset']}`",
@@ -506,18 +709,70 @@ def _markdown(report: Dict[str, Any]) -> str:
         f"- Sessions recorded: {report.get('recorded_session_count')}",
         f"- Sessions dropped: {report.get('dropped_session_count')}",
         "",
-        "| Order | Session | Task | Condition | Rep | Outcome | Valid | Primary | Input | Cached | Output |",
-        "|------:|---------|------|-----------|----:|---------|-------|---------|------:|-------:|-------:|",
+        "## Planned execution order",
+        "",
+        "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep |",
+        "|----:|---------|------|--------:|-----------------|-----------|------|----:|",
     ]
+    for entry in report.get("planned_execution_order") or []:
+        lines.append(
+            "| {seq} | `{sid}` | `{pair}` | {pos} | `{order}` | {cond} | `{task}` | {rep} |".format(
+                seq=entry.get("sequence"),
+                sid=entry.get("session_id"),
+                pair=entry.get("pair_id"),
+                pos=entry.get("order_in_pair"),
+                order=entry.get("condition_order"),
+                cond=entry.get("condition"),
+                task=entry.get("task_id"),
+                rep=entry.get("rep"),
+            )
+        )
+    lines.extend([
+        "",
+        "## Actual execution order",
+        "",
+    ])
+    actual = report.get("actual_execution_order") or []
+    if not actual:
+        lines.append("No sessions were executed.")
+        lines.append("")
+    else:
+        lines.extend([
+            "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep |",
+            "|----:|---------|------|--------:|-----------------|-----------|------|----:|",
+        ])
+        for entry in actual:
+            lines.append(
+                "| {seq} | `{sid}` | `{pair}` | {pos} | `{order}` | {cond} | `{task}` | {rep} |".format(
+                    seq=entry.get("sequence"),
+                    sid=entry.get("session_id"),
+                    pair=entry.get("pair_id"),
+                    pos=entry.get("order_in_pair"),
+                    order=entry.get("condition_order"),
+                    cond=entry.get("condition"),
+                    task=entry.get("task_id"),
+                    rep=entry.get("rep"),
+                )
+            )
+        lines.append("")
+
+    lines.extend([
+        "## Sessions",
+        "",
+        "| Order | Session | Task | Condition | Rep | Outcome | Valid | Primary | Input | Cached | Output | Total | Tools |",
+        "|------:|---------|------|-----------|----:|---------|-------|---------|------:|-------:|-------:|------:|------:|",
+    ])
     for session in report.get("sessions") or []:
-        def _cell(name: str) -> str:
+        def _cell(name: str, *, kind: bool = True) -> str:
             figure = session.get(name) or {}
-            if figure.get("kind") == "unavailable":
+            if figure.get("kind") == "unavailable" or figure.get("value") is None:
                 return "unavailable"
-            return f"{figure.get('value')} ({figure.get('kind')})"
+            if kind:
+                return f"{figure.get('value')} ({figure.get('kind')})"
+            return str(figure.get("value"))
 
         lines.append(
-            "| {order} | `{sid}` | `{task}` | {cond} | {rep} | {outcome} | {valid} | {primary} | {inp} | {cached} | {out} |".format(
+            "| {order} | `{sid}` | `{task}` | {cond} | {rep} | {outcome} | {valid} | {primary} | {inp} | {cached} | {out} | {total} | {tools} |".format(
                 order=session.get("execution_order"),
                 sid=session.get("session_id"),
                 task=session.get("task_id"),
@@ -529,6 +784,8 @@ def _markdown(report: Dict[str, Any]) -> str:
                 inp=_cell("agent_input_tokens"),
                 cached=_cell("agent_cached_input_tokens"),
                 out=_cell("agent_output_tokens"),
+                total=_cell("agent_total_tokens"),
+                tools=_cell("tool_calls", kind=False),
             )
         )
     lines.extend([
@@ -536,11 +793,97 @@ def _markdown(report: Dict[str, Any]) -> str:
         "OverHaust context tokens, when present, are estimated hook counts and",
         "are not subtracted from the agent columns above.",
         "",
+        "## Cache analysis",
+        "",
+        PROMPT_CACHE_POLICY,
+        "",
+        (report.get("cache_analysis") or {}).get("note") or CACHE_ANALYSIS_NOTE,
+        "",
+        "| Task | Condition | n | Mean input | Mean cached | Cached rate | Mean output | Mean total | Excluded |",
+        "|------|-----------|--:|-----------:|------------:|------------:|------------:|-----------:|----------|",
+    ])
+    cache = report.get("cache_analysis") or {}
+    task_rows = cache.get("by_task_condition") or []
+    if not task_rows:
+        lines.append("| — | — | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | no recorded sessions |")
+    for row in task_rows:
+        lines.append(_cache_md_row(row, task=row.get("task_id")))
+    lines.extend([
+        "",
+        "| Condition | n | Mean input | Mean cached | Cached rate | Mean output | Mean total | Excluded |",
+        "|-----------|--:|-----------:|------------:|------------:|------------:|-----------:|----------|",
+    ])
+    condition_rows = cache.get("by_condition") or []
+    if not condition_rows:
+        lines.append("| — | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | no recorded sessions |")
+    for row in condition_rows:
+        lines.append(
+            "| {cond} | {n} | {inp} | {cached} | {rate} | {out} | {total} | {exc} |".format(
+                cond=row.get("condition"),
+                n=row.get("n_sessions"),
+                inp=_fmt_number(row.get("mean_input_tokens")),
+                cached=_fmt_number(row.get("mean_cached_input_tokens")),
+                rate=_fmt_number(row.get("cached_input_rate")),
+                out=_fmt_number(row.get("mean_output_tokens")),
+                total=_fmt_number(row.get("mean_total_tokens")),
+                exc=_excluded_text(row),
+            )
+        )
+    lines.extend([
+        "",
+        "## Agent behavior",
+        "",
+        "| Task | Condition | n | Mean tool calls | Zero-tool sessions | Tool calls unavailable | Invalid excluded |",
+        "|------|-----------|--:|----------------:|-------------------:|-----------------------:|-----------------:|",
+    ])
+    behavior_rows = ((report.get("agent_behavior") or {}).get("by_task_condition")) or []
+    if not behavior_rows:
+        lines.append("| — | — | 0 | unavailable | 0 | 0 | 0 |")
+    for row in behavior_rows:
+        lines.append(
+            "| `{task}` | {cond} | {n} | {mean} | {zero} | {unavail} | {invalid} |".format(
+                task=row.get("task_id"),
+                cond=row.get("condition"),
+                n=row.get("n_sessions"),
+                mean=_fmt_number(row.get("mean_tool_calls")),
+                zero=row.get("zero_tool_call_sessions"),
+                unavail=row.get("tool_calls_unavailable"),
+                invalid=row.get("n_invalid_excluded"),
+            )
+        )
+    lines.extend([
+        "",
         "Codex CLI 0.146.0 does not emit a structured files-inspected count or",
         "a pure retrieval-latency field. Those metrics stay `unavailable`.",
         "",
     ])
     return "\n".join(lines)
+
+
+def _excluded_text(row: Dict[str, Any]) -> str:
+    return (
+        f"invalid={row.get('n_invalid_excluded')}, "
+        f"input_unavail={row.get('input_unavailable')}, "
+        f"cached_unavail={row.get('cached_input_unavailable')}, "
+        f"output_unavail={row.get('output_unavailable')}, "
+        f"total_unavail={row.get('total_unavailable')}"
+    )
+
+
+def _cache_md_row(row: Dict[str, Any], *, task: Any) -> str:
+    return (
+        "| `{task}` | {cond} | {n} | {inp} | {cached} | {rate} | {out} | {total} | {exc} |".format(
+            task=task,
+            cond=row.get("condition"),
+            n=row.get("n_sessions"),
+            inp=_fmt_number(row.get("mean_input_tokens")),
+            cached=_fmt_number(row.get("mean_cached_input_tokens")),
+            rate=_fmt_number(row.get("cached_input_rate")),
+            out=_fmt_number(row.get("mean_output_tokens")),
+            total=_fmt_number(row.get("mean_total_tokens")),
+            exc=_excluded_text(row),
+        )
+    )
 
 
 def write_layer4_report(
@@ -562,11 +905,24 @@ def write_layer4_report(
     return {"json": str(json_path), "md": str(md_path)}
 
 
+def _run_mode(config: RunConfig) -> str:
+    if config.dry_run:
+        return "dry_run"
+    if config.preset == FULL_NAME:
+        return "full"
+    return "pilot"
+
+
 def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
-    """Execute the 8-session pilot, or write its plan when `dry_run` is set."""
+    """Execute a preset, or write its plan when `dry_run` is set."""
     config = config or RunConfig()
-    tasks = load_pilot_tasks()
-    plans = plan_matrix(tasks, seed=config.seed)
+    if config.preset not in {PILOT_NAME, FULL_NAME}:
+        raise PreflightError(
+            f"Unknown preset {config.preset!r}. Use {PILOT_NAME!r} or {FULL_NAME!r}."
+        )
+    tasks = load_preset_tasks(config.preset)
+    reps = preset_reps(config.preset)
+    plans = plan_matrix(tasks, seed=config.seed, reps=reps)
     by_id = {task.task_id: task for task in tasks}
     env = dict(config.env if config.env is not None else os.environ)
     repo_root = config.repo_root or Path(__file__).resolve().parents[2]
@@ -647,17 +1003,21 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
                 shutil.rmtree(run_dir, ignore_errors=True)
 
         summary = _summarize(sessions)
+        planned_order = [_order_entry(plan, index) for index, plan in enumerate(plans)]
+        actual_order = [_order_entry(session, index) for index, session in enumerate(sessions)]
         report: Dict[str, Any] = {
             "schema_version": RUN_SCHEMA_VERSION,
             "protocol_version": PROTOCOL_VERSION,
             "benchmark_version": BENCHMARK_VERSION,
             "layer": 4,
-            "preset": PILOT_NAME,
-            "mode": "dry_run" if config.dry_run else "pilot",
+            "preset": config.preset,
+            "mode": _run_mode(config),
             "instrumentation_only": True,
             "claim_policy": CLAIM_POLICY,
+            "cache_control_note": PROMPT_CACHE_POLICY,
             "generated_at": _now(),
             "seed": config.seed,
+            "execution_order_policy": EXECUTION_ORDER_POLICY,
             "agent": "codex",
             "agent_version": probe.version,
             "agent_version_source": probe.version_source,
@@ -671,20 +1031,27 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
             "project_id": workspace.project_id,
             "repository": str(workspace.root),
             "task_ids": [task.task_id for task in tasks],
-            "reps": 2,
+            "reps": reps,
             "conditions": ["baseline", "overhaust"],
             "planned_session_count": len(plans),
             "recorded_session_count": len(sessions),
             "dropped_session_count": len(plans) - len(sessions) if not config.dry_run else 0,
             "summary": summary,
+            "planned_execution_order": planned_order,
+            "actual_execution_order": actual_order,
             "plans": [plan.to_dict() for plan in plans],
             "sessions": [session.to_dict() for session in sessions],
+            "cache_analysis": cache_analysis(sessions),
+            "agent_behavior": agent_behavior(sessions),
             "raw_dir": raw_note,
             "token_accounting_note": (
-                "Agent input, cached input, and output are copied from Codex "
-                "when Codex reports them. Missing fields stay null with kind "
-                "unavailable. Estimated OverHaust context tokens are a separate "
-                "field and are never subtracted."
+                "Agent input, cached input, output, and the provider-reported "
+                "total are copied from Codex when Codex reports them. "
+                "cached_input_tokens stays a component of input_tokens and is "
+                "never subtracted. Missing fields stay null with kind "
+                "unavailable. A missing total is not replaced with a sum. "
+                "Estimated OverHaust context tokens are a separate field and "
+                "are never subtracted or mixed into cache analysis."
             ),
         }
         if config.dry_run:
