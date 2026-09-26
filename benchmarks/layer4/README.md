@@ -40,7 +40,7 @@ prompts, scoring, tool configuration, seed, and timeout match the 20-session
 run. The hook stays absent on baseline.
 
 ```bash
-python3 -m benchmarks.layer4.pilot --dry-run --preset full --conditions baseline --model gpt-4o
+python3 -m benchmarks.layer4.pilot --dry-run --preset full --conditions baseline --model gpt-5.5
 ```
 
 `--conditions` defaults to both `baseline` and `overhaust`. One condition
