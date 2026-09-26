@@ -9,6 +9,15 @@ OverHaust `.cursor/rules` or MCP config. The harness checks that on disk.
 `--model` rewrites `~/.cursor/cli-config.json` model keys. The guard snapshots
 those keys and the other files the CLI rewrites, and restores them after the
 run, including when a session fails.
+
+`mcp-toggle` is workspace-scoped. CLI 2026.09.26 writes
+`~/.cursor/projects/<slug>/mcp-disabled.json`, and the slug comes from
+`process.cwd()`. Disabling from the user home does not hide OverHaust in a
+later session workspace, and it leaves that file behind. Each session runs
+`mcp disable` and `mcp list` with cwd set to its own temp workspace. Those
+two commands start MCP servers, so each workspace calls each of them once.
+Cleanup deletes only project slug directories that appeared during that
+call, and it refuses to modify a slug that already existed.
 """
 
 from __future__ import annotations
@@ -51,9 +60,11 @@ REWRITTEN_CURSOR_FILES = (
     "agent-cli-state.json",
     "statsig-cache.json",
 )
-MCP_SNAPSHOT_FILES = (
-    "mcp.json",
-    "cli-config.json",
+MCP_DISABLED_FILE = "mcp-disabled.json"
+MCP_COMMANDS_NOTE = (
+    "cursor-agent `mcp list` and `mcp disable` start configured MCP servers. "
+    "Each workspace calls disable once and list once. Cleanup is a filesystem "
+    "check and does not call either command again."
 )
 
 CURSOR_PERMISSIONS = {
@@ -421,93 +432,175 @@ def _read_model_keys(path: Path) -> tuple[Dict[str, Any], List[str]]:
     return present, missing
 
 
-class McpToggleGuard:
-    """
-    Disable the `overhaust` MCP server for both conditions, then restore.
+def _reject_home_cwd(workspace: Path, state_home: Path) -> None:
+    """mcp disable is scoped to process.cwd(). Never use the user home."""
+    cwd = workspace.resolve()
+    forbidden = {state_home.resolve(), Path.home().resolve()}
+    if cwd in forbidden:
+        raise ValueError(
+            "Refusing to run cursor-agent mcp commands with cwd set to the "
+            "user home or the Cursor state home."
+        )
 
-    The snapshot is the bytes of the user Cursor config files plus the
-    `mcp list` text from before the disable. Restore writes those bytes
-    back and checks the hash. A second `mcp list` is compared when the
-    runner can execute it.
+
+def _disabled_files(projects_root: Path) -> Dict[str, Optional[bytes]]:
+    """Map each direct project slug to its mcp-disabled.json bytes."""
+    found: Dict[str, Optional[bytes]] = {}
+    if not projects_root.exists() or projects_root.is_symlink() or not projects_root.is_dir():
+        return found
+    for child in projects_root.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        path = child / MCP_DISABLED_FILE
+        if path.is_symlink():
+            found[child.name] = b"\0symlink"
+        elif path.is_file():
+            found[child.name] = path.read_bytes()
+        else:
+            found[child.name] = None
+    return found
+
+
+class WorkspaceMcpDisable:
+    """
+    Disable `overhaust` for one workspace cwd, then delete only new slugs.
+
+    The CLI writes `~/.cursor/projects/<slug>/mcp-disabled.json` for
+    `process.cwd()`. This class snapshots the project directory listing,
+    runs disable and list with cwd set to `workspace`, and afterwards
+    removes slug directories that were not in the snapshot. A slug that
+    already existed is never modified, even when the CLI wrote
+    `mcp-disabled.json` inside it.
     """
 
     def __init__(
         self,
         state_home: Path,
+        workspace: Path,
         binary: str,
         runner: Callable[..., Any],
         env: Dict[str, str],
     ) -> None:
         self.state_home = state_home
+        self.workspace = workspace
         self.binary = binary
         self.runner = runner
         self.env = env
-        self.cursor_dir = state_home / ".cursor"
-        self._blobs: Dict[str, Optional[bytes]] = {}
-        self._list_before: Optional[str] = None
+        self.projects_root = state_home / ".cursor" / "projects"
+        self._before_names: set[str] = set()
+        self._before_disabled: Dict[str, Optional[bytes]] = {}
+        self._projects_existed = False
+        self._snapshotted = False
+        self.created_slugs: List[str] = []
+        self.preexisting_touched: List[str] = []
 
-    def snapshot(self) -> Dict[str, Any]:
-        self.cursor_dir.mkdir(parents=True, exist_ok=True)
-        for name in MCP_SNAPSHOT_FILES:
-            path = self.cursor_dir / name
-            self._blobs[name] = path.read_bytes() if path.is_file() else None
-        listed = self.runner([self.binary, "mcp", "list"], dict(self.env), str(self.state_home), 20)
-        self._list_before = (listed.stdout or "") + (listed.stderr or "")
-        return {
-            "files": {name: blob is not None for name, blob in self._blobs.items()},
-            "list_exit_code": listed.returncode,
-            "overhaust_listed": _mentions_overhaust(self._list_before),
-        }
+    def snapshot(self) -> None:
+        _reject_home_cwd(self.workspace, self.state_home)
+        self._projects_existed = (
+            self.projects_root.exists() and not self.projects_root.is_symlink()
+        )
+        self._before_disabled = _disabled_files(self.projects_root)
+        self._before_names = set(self._before_disabled)
+        self._snapshotted = True
 
-    def disable(self) -> Dict[str, Any]:
-        result = self.runner(
+    def _refresh_created(self) -> None:
+        current = _disabled_files(self.projects_root)
+        self.created_slugs = sorted(set(current) - self._before_names)
+        touched: List[str] = []
+        for name, before in self._before_disabled.items():
+            after = current.get(name, before)
+            if after != before:
+                touched.append(name)
+        self.preexisting_touched = sorted(touched)
+
+    def disable_and_verify(self) -> Dict[str, Any]:
+        """One `mcp disable` and one `mcp list`, both with workspace cwd."""
+        if not self._snapshotted:
+            self.snapshot()
+        _reject_home_cwd(self.workspace, self.state_home)
+        disabled = self.runner(
             [self.binary, "mcp", "disable", "overhaust"],
             dict(self.env),
-            str(self.state_home),
+            str(self.workspace),
             20,
         )
-        return {
-            "exit_code": result.returncode,
-            "timed_out": result.timed_out,
-            "stderr": (result.stderr or "")[:500],
-        }
-
-    def overhaust_still_listed(self) -> bool:
+        self._refresh_created()
         listed = self.runner(
             [self.binary, "mcp", "list"],
             dict(self.env),
-            str(self.state_home),
+            str(self.workspace),
             20,
         )
+        self._refresh_created()
         text = (listed.stdout or "") + (listed.stderr or "")
-        if listed.returncode not in (0,):
-            return True
-        return _mentions_overhaust(text)
-
-    def restore(self) -> Dict[str, Any]:
-        for name, blob in self._blobs.items():
-            path = self.cursor_dir / name
-            if blob is None:
-                if path.exists():
-                    path.unlink()
-            else:
-                path.write_bytes(blob)
-        hashes_ok = True
-        for name, blob in self._blobs.items():
-            path = self.cursor_dir / name
-            if blob is None:
-                hashes_ok = hashes_ok and not path.exists()
-            else:
-                hashes_ok = hashes_ok and path.is_file() and path.read_bytes() == blob
-        listed = self.runner([self.binary, "mcp", "list"], dict(self.env), str(self.state_home), 20)
-        after = (listed.stdout or "") + (listed.stderr or "")
-        list_ok = listed.returncode == 0 and (
-            _mentions_overhaust(after) == _mentions_overhaust(self._list_before or "")
-        )
+        list_failed = bool(listed.timed_out) or listed.returncode not in (0,)
+        overhaust_listed = list_failed or _mentions_overhaust(text)
         return {
-            "files_restored": hashes_ok,
-            "list_matches_snapshot": list_ok,
-            "restored": hashes_ok and list_ok,
+            "strategy": ISOLATION_MCP,
+            "applied": True,
+            "mcp_disable_called": True,
+            "disable_exit_code": disabled.returncode,
+            "disable_timed_out": bool(disabled.timed_out),
+            "list_exit_code": listed.returncode,
+            "list_timed_out": bool(listed.timed_out),
+            "overhaust_listed": overhaust_listed,
+            "created_slugs": list(self.created_slugs),
+            "refused_preexisting_slugs": list(self.preexisting_touched),
+            "mcp_commands": ["mcp disable overhaust", "mcp list"],
+            "note": MCP_COMMANDS_NOTE,
+        }
+
+    def cleanup(self) -> Dict[str, Any]:
+        """
+        Remove slug dirs created after the snapshot.
+
+        Pre-existing slug directories are left byte-for-byte alone, including
+        an `mcp-disabled.json` the CLI wrote into them.
+        """
+        if not self._snapshotted:
+            return {
+                "removed_slugs": [],
+                "created_slugs_remaining": [],
+                "refused_preexisting_slugs": [],
+                "created_slugs_removed": False,
+                "preexisting_dirs_preserved": False,
+                "cleanup_verified": False,
+                "detail": "no projects snapshot; refusing to delete anything",
+            }
+        self._refresh_created()
+        created = list(self.created_slugs)
+        removed: List[str] = []
+        root = self.projects_root.resolve() if self.projects_root.exists() else None
+        for slug in created:
+            if slug in self._before_names:
+                continue
+            path = self.projects_root / slug
+            if path.is_symlink() or not path.is_dir():
+                continue
+            if root is None:
+                continue
+            resolved = path.resolve()
+            if root != resolved and root not in resolved.parents:
+                continue
+            shutil.rmtree(path)
+            removed.append(slug)
+        if (
+            not self._projects_existed
+            and self.projects_root.is_dir()
+            and not self.projects_root.is_symlink()
+            and not any(self.projects_root.iterdir())
+        ):
+            self.projects_root.rmdir()
+        remaining = [slug for slug in created if (self.projects_root / slug).exists()]
+        preserved = all((self.projects_root / name).exists() for name in self._before_names)
+        created_gone = not remaining
+        return {
+            "removed_slugs": removed,
+            "created_slugs_remaining": remaining,
+            "refused_preexisting_slugs": list(self.preexisting_touched),
+            "created_slugs_removed": created_gone,
+            "preexisting_dirs_preserved": preserved,
+            "cleanup_verified": created_gone and preserved and not self.preexisting_touched,
         }
 
 

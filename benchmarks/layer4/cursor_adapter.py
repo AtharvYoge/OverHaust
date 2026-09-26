@@ -20,6 +20,7 @@ from benchmarks.layer4.condition import PROMPT_CACHE_POLICY
 from benchmarks.layer4.cursor_condition import (
     CURSOR_PERMISSIONS,
     INTEGRATION_HOOK,
+    ISOLATION_MCP,
     TARGET_CURSOR_AGENT_VERSION,
 )
 from benchmarks.layer4.cursor_parse import (
@@ -107,6 +108,7 @@ class CursorSessionCapture:
     original_planned_position: Optional[int] = None
     overhaust_commit: Optional[str] = None
     prompt_file_written: bool = False
+    isolation_evidence: Dict[str, Any] = field(default_factory=dict)
 
 
 class CursorAdapter:
@@ -323,6 +325,18 @@ def session_from_capture(
         invalid.append("overhaust_mcp_tool_called")
     if capture.store.parseable and capture.store.overhaust_tools:
         invalid.append("overhaust_mcp_tool_available")
+    if capture.isolation == ISOLATION_MCP:
+        evidence = capture.isolation_evidence or {}
+        if evidence.get("applied") is not True:
+            invalid.append("mcp_toggle_not_applied")
+        if evidence.get("disable_timed_out") or evidence.get("disable_exit_code") not in (0,):
+            invalid.append("mcp_toggle_disable_failed")
+        if evidence.get("overhaust_listed") is not False:
+            invalid.append("overhaust_mcp_still_listed")
+        if evidence.get("refused_preexisting_slugs"):
+            invalid.append("mcp_toggle_preexisting_slug")
+        if evidence.get("cleanup_verified") is not True:
+            invalid.append("mcp_toggle_cleanup_failed")
 
     deduped: List[str] = []
     for reason in invalid:
@@ -391,6 +405,7 @@ def session_from_capture(
     files_kind = "exact" if figures["files_inspected"].is_exact else "unavailable"
     supplemental: Dict[str, Any] = {
         "isolation": capture.isolation,
+        "isolation_evidence": dict(capture.isolation_evidence or {}),
         "hook_state": capture.hook_layout,
         "injection_verification": capture.store.verification,
         "store_inspection": capture.store.to_dict(),

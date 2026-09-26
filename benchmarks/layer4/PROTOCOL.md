@@ -266,14 +266,29 @@ condition may have OverHaust MCP tools. Two strategies:
 1. `isolated-home` — per-session temp HOME, no copied credentials, auth from
    `CURSOR_API_KEY`. Preflight runs `cursor-agent mcp list` in a temp HOME
    that contains only a sentinel server. The strategy is usable only when
-   that list shows the sentinel and does not show `overhaust`.
-2. `mcp-toggle` — snapshot MCP config, `cursor-agent mcp disable overhaust`
-   for the whole run (both conditions), restore the bytes, and verify the
-   restore. Other global MCP servers stay. That is a confounder of this
-   strategy, not of `isolated-home`.
+   that list shows the sentinel and does not show `overhaust`. That preflight
+   does not call `mcp disable`.
+2. `mcp-toggle` — for each session, both conditions the same way,
+   `cursor-agent mcp disable overhaust` with cwd set to that session's fresh
+   temp workspace, then `mcp list` from the same cwd. CLI 2026.09.26 writes
+   the server name to `~/.cursor/projects/<slug>/mcp-disabled.json`, and the
+   slug is derived from `process.cwd()`. Disabling from the user home does
+   not hide OverHaust in the session workspace. The harness diffs
+   `~/.cursor/projects` before and after the command and deletes only slug
+   directories that appeared for that call. It does not modify a slug that
+   already existed. After the session, including on failure or interrupt, it
+   checks that those new directories are gone. Other global MCP servers stay.
+   That is a confounder of this strategy, not of `isolated-home`.
+
+`mcp list` and `mcp disable` start configured MCP servers. Each workspace
+calls each command once. Cleanup does not call them again.
 
 Preflight (`--preflight`) checks the CLI, auth, whether the model is listed,
-and both strategies. It does not pass `-p`.
+and only the strategy named by `--isolation`. Every preflight command uses a
+throwaway directory as cwd. It does not use the user home or a project
+directory. The mcp-toggle probe disables OverHaust in its own throwaway
+workspace and deletes only the slug that command created. It does not pass
+`-p`.
 
 `--model` rewrites `~/.cursor/cli-config.json` keys `model`, `selectedModel`,
 `modelParameters`, `hasChangedDefaultModel`, and `modelSelectionHistory`.
@@ -303,10 +318,11 @@ invalid. If the store cannot be parsed, verification is `hook-log-only`.
 ### Validity and means
 
 Invalid sessions (bad snapshot, wrong hooks file, hook error, empty context,
-MCP tool available or called, marker mismatch) stay in the dataset and are
-excluded from means. Failed outcomes and incorrect answers stay in the
-dataset and in the primary means. Timeouts are recorded. Unavailable figures
-are not treated as zero.
+MCP tool available or called, marker mismatch, overhaust still listed after
+a workspace disable, a pre-existing project slug touched, or slug cleanup
+not verified) stay in the dataset and are excluded from means. Failed
+outcomes and incorrect answers stay in the dataset and in the primary means.
+Timeouts are recorded. Unavailable figures are not treated as zero.
 
 Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
 

@@ -34,10 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(PILOT_NAME, FULL_NAME),
         default=PILOT_NAME,
         help=(
-            "pilot: sym_generate_kot and arch_kitchen_hardware × "
-            "baseline/overhaust × 2 reps (8 sessions, default). "
-            "full: all 5 Layer 3 tasks × baseline/overhaust × 2 reps "
-            "(20 sessions)."
+            "pilot (default): Codex is sym_generate_kot and "
+            "arch_kitchen_hardware × baseline/overhaust × 2 reps (8 sessions). "
+            "Cursor is all 5 tasks × baseline/overhaust × 1 rep (10 sessions). "
+            "full: Codex and Cursor are all 5 tasks × baseline/overhaust × "
+            "2 reps (20 sessions)."
         ),
     )
     parser.add_argument(
@@ -85,15 +86,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Cursor isolation strategy. Default for --agent cursor is "
             "isolated-home. isolated-home uses a temp HOME and CURSOR_API_KEY. "
-            "mcp-toggle disables the overhaust MCP for both conditions and restores it."
+            "mcp-toggle runs `cursor-agent mcp disable overhaust` with cwd set "
+            "to each session workspace, then deletes only the "
+            "~/.cursor/projects slug that command created. "
+            "`mcp list` and `mcp disable` start MCP servers."
         ),
     )
     parser.add_argument(
         "--preflight",
         action="store_true",
         help=(
-            "Cursor only. Check the CLI, auth, model list, and isolation. "
-            "Does not start a model session."
+            "Cursor only. Check the CLI, auth, model list, and the selected "
+            "--isolation strategy. Does not start a model session. Does not "
+            "run from the user home or a project directory. isolated-home "
+            "does not call mcp disable."
         ),
     )
     parser.add_argument(
@@ -177,12 +183,12 @@ def _main_cursor(args: argparse.Namespace) -> int:
         f"(dropped {report['dropped_session_count']})."
     )
     restore = report.get("state_restore") or {}
-    mcp_restore = report.get("mcp_restore") or {}
+    mcp_cleanup = report.get("mcp_cleanup") or {}
     if restore and not (restore.get("model_keys_restored") and restore.get("files_restored")):
         print("cli-config restore did not verify.", file=sys.stderr)
         return 2
-    if mcp_restore and not mcp_restore.get("restored", True):
-        print("MCP config restore did not verify.", file=sys.stderr)
+    if mcp_cleanup and not mcp_cleanup.get("cleanup_verified", True):
+        print("mcp-disabled.json cleanup did not verify.", file=sys.stderr)
         return 2
     return 0
 

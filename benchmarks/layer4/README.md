@@ -164,9 +164,13 @@ harness session id and the workspace root match. Baseline has no hooks file.
 Neither workspace gets OverHaust rules or MCP config.
 
 `--isolation isolated-home` uses an empty temp HOME and `CURSOR_API_KEY`.
-`--isolation mcp-toggle` runs `cursor-agent mcp disable overhaust` for both
-conditions and restores the previous MCP config. Preflight reports which
-strategy `cursor-agent` actually honors. It does not start a model session.
+Its preflight does not call `mcp disable`. `--isolation mcp-toggle` runs
+`cursor-agent mcp disable overhaust` with cwd set to each session workspace,
+then removes only the `~/.cursor/projects/<slug>` directory that command
+created. It does not modify a slug that already existed. Preflight checks
+only the selected strategy, and every preflight command uses a throwaway
+directory as cwd. `mcp list` and `mcp disable` start MCP servers, so each
+workspace calls each of them once. Preflight does not start a model session.
 
 Provider-side prompt caching was not independently controlled; cached-input usage was recorded and retained as part of the measured session usage.
 

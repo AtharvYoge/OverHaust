@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.layer4.adapters import require_adapter
-from benchmarks.layer4.cli import main
+from benchmarks.layer4.cli import build_parser, main
 from benchmarks.layer4.cursor_adapter import (
     CursorAdapter,
     CursorProbe,
@@ -101,17 +102,32 @@ def _write_store(home: Path, session_id: str, text: str) -> None:
 
 
 class FakeCursor:
-    def __init__(self, *, stream: str = SUCCESS, timeout: bool = False, fail: bool = False, mutate_home: Path | None = None):
+    def __init__(
+        self,
+        *,
+        stream: str = SUCCESS,
+        timeout: bool = False,
+        fail: bool = False,
+        mutate_home: Path | None = None,
+        projects_state: Path | None = None,
+        disable_mode: str = "new-slug",
+        model_failure: str | None = None,
+    ):
         self.stream = stream
         self.timeout = timeout
         self.fail = fail
         self.mutate_home = mutate_home
+        self.projects_state = projects_state
+        self.disable_mode = disable_mode
+        self.model_failure = model_failure
         self.calls: list[list[str]] = []
+        self.cwds: list[str] = []
         self.launches: list[dict] = []
 
     def __call__(self, command, env, cwd, timeout):
         argv = [str(part) for part in command]
         self.calls.append(argv)
+        self.cwds.append(str(cwd))
         if "--version" in argv:
             return ProcessResult(0, "2026.09.26-dd393fe\n", "", 1, False)
         if "status" in argv:
@@ -119,12 +135,20 @@ class FakeCursor:
         if "models" in argv or "--list-models" in argv:
             return ProcessResult(0, "gpt-5.5-medium\nGPT-5.5 272K Medium\n", "", 1, False)
         if len(argv) >= 3 and argv[1] == "mcp" and argv[2] == "list":
+            if self.projects_state is not None:
+                return ProcessResult(0, self._mcp_list_text(), "", 1, False)
             home = Path(env.get("HOME") or cwd)
             mcp = home / ".cursor" / "mcp.json"
             text = mcp.read_text(encoding="utf-8") if mcp.is_file() else ""
             return ProcessResult(0, text, "", 1, False)
         if len(argv) >= 3 and argv[1] == "mcp" and argv[2] == "disable":
+            if self.projects_state is not None:
+                self._write_disabled_slug(Path(cwd))
             return ProcessResult(0, "disabled overhaust\n", "", 1, False)
+        if "-p" in argv and self.model_failure == "raise":
+            raise RuntimeError("model exploded")
+        if "-p" in argv and self.model_failure == "interrupt":
+            raise KeyboardInterrupt()
         if "-p" not in argv:
             return ProcessResult(1, "", "unexpected command", 1, False)
         root = Path(cwd)
@@ -177,6 +201,38 @@ class FakeCursor:
             )
             return ProcessResult(1, failed, "", 20, False)
         return ProcessResult(0, self.stream, "", 20, False)
+
+    def _projects(self) -> Path:
+        assert self.projects_state is not None
+        return self.projects_state / ".cursor" / "projects"
+
+    def _mcp_list_text(self) -> str:
+        projects = self._projects()
+        hidden = False
+        if projects.is_dir():
+            for child in projects.iterdir():
+                disabled = child / "mcp-disabled.json"
+                if disabled.is_file() and b"overhaust" in disabled.read_bytes():
+                    hidden = True
+        if hidden:
+            return "gmail\nprisma\n"
+        return "overhaust\nget_relevant_context\n"
+
+    def _write_disabled_slug(self, cwd: Path) -> None:
+        projects = self._projects()
+        projects.mkdir(parents=True, exist_ok=True)
+        session_workspace = (cwd / "src").is_dir()
+        if self.disable_mode == "preexisting" and session_workspace:
+            slug = projects / "user-project"
+            slug.mkdir(parents=True, exist_ok=True)
+            path = slug / "mcp-disabled.json"
+            previous = path.read_bytes() if path.is_file() else b""
+            path.write_bytes(previous + b'["overhaust"]\n')
+            return
+        digest = hashlib.sha256(str(cwd).encode()).hexdigest()[:12]
+        slug = projects / f"slug-{digest}"
+        slug.mkdir(parents=True, exist_ok=True)
+        (slug / "mcp-disabled.json").write_text('["overhaust"]\n', encoding="utf-8")
 
 
 def _config(tmp_path: Path, fake: FakeCursor, **overrides) -> CursorRunConfig:
@@ -371,6 +427,9 @@ def test_condition_separation_and_cli_config_restore(tmp_path: Path):
     assert "--trust" in launches[0]["command"]
     assert "--force" not in launches[0]["command"]
     assert "-p" in launches[0]["command"]
+    assert not any(call[1:3] == ["mcp", "disable"] for call in fake.calls)
+    forbidden_cwd = {state.resolve(), Path.home().resolve()}
+    assert all(Path(cwd).resolve() not in forbidden_cwd for cwd in fake.cwds)
     assert commands
     for session in report["sessions"]:
         assert session["agent"] == "cursor"
@@ -614,12 +673,20 @@ def test_preflight_checks_isolation_without_a_model_session(tmp_path: Path):
     assert report["model_session_launched"] is False
     assert report["selected_usable"] is True
     assert report["isolated_home"]["usable"] is True
+    assert report["isolated_home"]["checked"] is True
+    assert report["mcp_toggle"]["checked"] is False
     assert report["cli_present"] is True
     assert report["model_listed"] is True
     assert all("-p" not in call for call in fake.calls)
+    assert not any(call[1:3] == ["mcp", "disable"] for call in fake.calls)
+    forbidden_cwd = {state.resolve(), Path.home().resolve()}
+    assert all(Path(cwd).resolve() not in forbidden_cwd for cwd in fake.cwds)
+
+    seen = []
 
     def ignores_home(command, env, cwd, timeout):
         argv = [str(part) for part in command]
+        seen.append((argv, str(cwd)))
         if "--version" in argv:
             return ProcessResult(0, "2026.09.26-dd393fe\n", "", 1, False)
         if "models" in argv:
@@ -639,8 +706,10 @@ def test_preflight_checks_isolation_without_a_model_session(tmp_path: Path):
         runner=ignores_home,
     )
     assert blocked["isolated_home"]["usable"] is False
-    assert blocked["mcp_toggle"]["usable"] is False
+    assert blocked["mcp_toggle"]["checked"] is False
     assert blocked["selected_usable"] is False
+    assert not any(argv[1:3] == ["mcp", "disable"] for argv, _cwd in seen)
+    assert all(Path(cwd).resolve() not in forbidden_cwd for _argv, cwd in seen)
 
 
 def test_cli_dry_run_and_preflight_flags(tmp_path: Path, monkeypatch, capsys):
@@ -691,6 +760,185 @@ def test_cli_dry_run_and_preflight_flags(tmp_path: Path, monkeypatch, capsys):
 
     code = main(["--preflight", "--dry-run", "--results-dir", str(tmp_path / "nope")])
     assert code == 2
+
+
+def _assert_cwd_is_throwaway(fake: FakeCursor, state: Path) -> None:
+    forbidden = {state.resolve(), Path.home().resolve()}
+    assert fake.cwds
+    assert all(Path(cwd).resolve() not in forbidden for cwd in fake.cwds)
+
+
+def test_preflight_probes_only_the_selected_isolation(tmp_path: Path):
+    state = tmp_path / "userhome"
+    state.mkdir()
+    kept = state / ".cursor" / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+    home_fake = FakeCursor()
+    home = run_cursor_preflight(
+        binary="cursor-agent",
+        env={"CURSOR_API_KEY": "test-cursor-key"},
+        isolation="isolated-home",
+        model="gpt-5.5-medium",
+        state_home=state,
+        runner=home_fake,
+    )
+    assert home["selected_usable"] is True
+    assert home["isolated_home"]["checked"] is True
+    assert home["mcp_toggle"]["checked"] is False
+    assert not any(call[1:3] == ["mcp", "disable"] for call in home_fake.calls)
+    _assert_cwd_is_throwaway(home_fake, state)
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+
+    toggle_fake = FakeCursor(projects_state=state)
+    toggled = run_cursor_preflight(
+        binary="cursor-agent",
+        env={"CURSOR_API_KEY": "test-cursor-key"},
+        isolation="mcp-toggle",
+        model="gpt-5.5-medium",
+        state_home=state,
+        runner=toggle_fake,
+    )
+    assert toggled["selected_usable"] is True
+    assert toggled["mcp_toggle"]["checked"] is True
+    assert toggled["isolated_home"]["checked"] is False
+    disables = [call for call in toggle_fake.calls if call[1:3] == ["mcp", "disable"]]
+    lists = [call for call in toggle_fake.calls if call[1:3] == ["mcp", "list"]]
+    assert disables == [["cursor-agent", "mcp", "disable", "overhaust"]]
+    assert lists == [["cursor-agent", "mcp", "list"]]
+    assert not any("layer4-home-sentinel" in "".join(call) for call in toggle_fake.calls)
+    _assert_cwd_is_throwaway(toggle_fake, state)
+    projects = state / ".cursor" / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert not (kept / "mcp-disabled.json").exists()
+
+
+def test_mcp_toggle_disables_per_workspace_and_cleans_created_slugs(tmp_path: Path):
+    state = tmp_path / "userhome"
+    kept = state / ".cursor" / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+    fake = FakeCursor(projects_state=state)
+    report = run_cursor(_config(
+        tmp_path,
+        fake,
+        state_home=state,
+        isolation="mcp-toggle",
+    ))
+    assert report["recorded_session_count"] == 10
+    launches = fake.launches
+    assert len(launches) == 10
+    assert sum(1 for item in launches if item["hooks"]) == 5
+    assert sum(1 for item in launches if not item["hooks"]) == 5
+    disable_cwds = [
+        cwd for argv, cwd in zip(fake.calls, fake.cwds) if argv[1:3] == ["mcp", "disable"]
+    ]
+    list_cwds = [
+        cwd for argv, cwd in zip(fake.calls, fake.cwds) if argv[1:3] == ["mcp", "list"]
+    ]
+    # One preflight pair, then one pair per session. No extra mcp calls.
+    assert len(disable_cwds) == 11
+    assert len(list_cwds) == 11
+    launch_cwds = [item["cwd"] for item in launches]
+    assert disable_cwds[1:] == launch_cwds
+    assert list_cwds[1:] == launch_cwds
+    _assert_cwd_is_throwaway(fake, state)
+    projects = state / ".cursor" / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert report["mcp_cleanup"]["cleanup_verified"] is True
+    for session in report["sessions"]:
+        evidence = session["supplemental_telemetry"]["isolation_evidence"]
+        assert evidence["applied"] is True
+        assert evidence["overhaust_listed"] is False
+        assert evidence["cleanup_verified"] is True
+        assert evidence["refused_preexisting_slugs"] == []
+        assert evidence["created_slugs"]
+        assert evidence["removed_slugs"] == evidence["created_slugs"]
+        assert session["valid"] is True
+        assert "user-project" not in evidence["created_slugs"]
+
+
+def test_mcp_toggle_refuses_preexisting_project_slugs(tmp_path: Path):
+    state = tmp_path / "userhome"
+    kept = state / ".cursor" / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+    fake = FakeCursor(projects_state=state, disable_mode="preexisting")
+    report = run_cursor(_config(
+        tmp_path,
+        fake,
+        state_home=state,
+        isolation="mcp-toggle",
+        conditions=["baseline"],
+    ))
+    assert report["recorded_session_count"] == 5
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert kept.is_dir()
+    disabled = (kept / "mcp-disabled.json").read_bytes()
+    assert b"overhaust" in disabled
+    projects = state / ".cursor" / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert report["mcp_cleanup"]["cleanup_verified"] is False
+    for session in report["sessions"]:
+        evidence = session["supplemental_telemetry"]["isolation_evidence"]
+        assert evidence["refused_preexisting_slugs"] == ["user-project"]
+        assert evidence["removed_slugs"] == []
+        assert session["valid"] is False
+        assert "mcp_toggle_preexisting_slug" in session["invalid_reasons"]
+        assert "user-project" not in (evidence.get("created_slugs") or [])
+
+
+def test_mcp_toggle_cleans_up_when_the_model_command_fails(tmp_path: Path):
+    state = tmp_path / "userhome"
+    kept = state / ".cursor" / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+    fake = FakeCursor(projects_state=state, model_failure="raise")
+    report = run_cursor(_config(
+        tmp_path,
+        fake,
+        state_home=state,
+        isolation="mcp-toggle",
+        conditions=["baseline"],
+    ))
+    assert report["recorded_session_count"] == 5
+    assert fake.launches == []
+    projects = state / ".cursor" / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert not (kept / "mcp-disabled.json").exists()
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert report["mcp_cleanup"]["cleanup_verified"] is True
+    for session in report["sessions"]:
+        evidence = session["supplemental_telemetry"]["isolation_evidence"]
+        assert evidence["cleanup_verified"] is True
+        assert evidence["overhaust_listed"] is False
+        assert session["valid"] is True
+        assert session["outcome"] == "error"
+        assert "model exploded" in (session["error"] or "")
+
+    interrupt = FakeCursor(projects_state=state, model_failure="interrupt")
+    with pytest.raises(KeyboardInterrupt):
+        run_cursor(_config(
+            tmp_path,
+            interrupt,
+            state_home=state,
+            isolation="mcp-toggle",
+            conditions=["baseline"],
+            stamp="cursor-interrupt",
+        ))
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert not (kept / "mcp-disabled.json").exists()
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+
+
+def test_preset_help_states_cursor_pilot_is_ten_sessions():
+    parser = build_parser()
+    preset_help = parser._option_string_actions["--preset"].help
+    assert "10 sessions" in preset_help
+    assert "8 sessions" in preset_help
+    assert "20 sessions" in preset_help
 
 
 def test_prompt_hashes_are_stable():

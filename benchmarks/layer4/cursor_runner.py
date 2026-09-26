@@ -37,9 +37,10 @@ from benchmarks.layer4.cursor_condition import (
     ISOLATION_HOME,
     ISOLATION_MCP,
     ISOLATIONS,
+    MCP_COMMANDS_NOTE,
     PROMPT_CACHE_POLICY,
     CursorStateGuard,
-    McpToggleGuard,
+    WorkspaceMcpDisable,
     build_cursor_command,
     build_cursor_env,
     cursor_hook_command,
@@ -244,6 +245,24 @@ def _run_mode(config: CursorRunConfig) -> str:
     return "pilot"
 
 
+_ISOLATION_NOT_CHECKED = {
+    "checked": False,
+    "usable": None,
+    "detail": "not checked; preflight probes only the isolation selected by --isolation",
+}
+
+
+def _preflight_cwd(cwd: Path, state_home: Path) -> None:
+    """Every preflight process cwd is a throwaway directory."""
+    resolved = cwd.resolve()
+    forbidden = {state_home.resolve(), Path.home().resolve()}
+    if resolved in forbidden:
+        raise PreflightError(
+            "Refusing to run cursor-agent preflight with cwd set to the user "
+            "home or the Cursor state home."
+        )
+
+
 def run_cursor_preflight(
     *,
     binary: str,
@@ -254,15 +273,43 @@ def run_cursor_preflight(
     runner: Callable[..., ProcessResult],
 ) -> Dict[str, Any]:
     """
-    Check the CLI, auth, model list, and both isolation strategies.
+    Check the CLI, auth, model list, and only the selected isolation strategy.
 
-    Does not pass `-p` and does not start a model session. The mcp-toggle
-    check disables `overhaust` and restores the snapshotted config.
+    Does not pass `-p` and does not start a model session. No step uses the
+    user home or a project directory as cwd. `isolated-home` does not call
+    `mcp disable`. `mcp-toggle` disables OverHaust in a throwaway directory
+    and deletes only the project slug that command created.
     """
     if isolation not in ISOLATIONS:
         raise PreflightError(
             f"Unknown isolation {isolation!r}. Use {ISOLATION_HOME!r} or {ISOLATION_MCP!r}."
         )
+    scratch = Path(tempfile.mkdtemp(prefix="layer4-cursor-preflight-"))
+    try:
+        _preflight_cwd(scratch, state_home)
+        return _preflight_report(
+            binary=binary,
+            env=env,
+            isolation=isolation,
+            model=model,
+            state_home=state_home,
+            runner=runner,
+            scratch=scratch,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _preflight_report(
+    *,
+    binary: str,
+    env: Dict[str, str],
+    isolation: str,
+    model: str,
+    state_home: Path,
+    runner: Callable[..., ProcessResult],
+    scratch: Path,
+) -> Dict[str, Any]:
     report: Dict[str, Any] = {
         "cli_present": False,
         "version": None,
@@ -272,39 +319,40 @@ def run_cursor_preflight(
         "model_listed": None,
         "model_listed_kind": "unavailable",
         "isolation_requested": isolation,
-        "isolated_home": {"usable": False, "detail": "not checked"},
-        "mcp_toggle": {"usable": False, "detail": "not checked"},
+        "isolated_home": dict(_ISOLATION_NOT_CHECKED),
+        "mcp_toggle": dict(_ISOLATION_NOT_CHECKED),
         "model_session_launched": False,
+        "preflight_cwd": "throwaway",
     }
     if not binary:
         report["detail"] = "cursor-agent is not on PATH"
         report["selected_usable"] = False
         return report
 
-    version = runner([binary, "--version"], dict(env), str(state_home), 15)
+    version = runner([binary, "--version"], dict(env), str(scratch), 15)
     version_text = (version.stdout or "").strip()
     report["cli_present"] = version.returncode == 0 and bool(version_text)
     if not report["cli_present"]:
         report["detail"] = "cursor-agent --version failed"
         report["selected_usable"] = False
-        report["isolated_home"] = {"usable": False, "detail": "CLI not usable"}
-        report["mcp_toggle"] = {"usable": False, "detail": "CLI not usable"}
         return report
     report["version"] = version_text.split()[-1]
     report["version_source"] = "cursor_agent_cli_version"
 
     if report["auth"] != "api_key":
-        status = runner([binary, "status"], dict(env), str(state_home), 15)
+        status = runner([binary, "status"], dict(env), str(scratch), 15)
         blob = ((status.stdout or "") + (status.stderr or "")).lower()
         if status.returncode == 0 and ("logged in" in blob or "logged-in" in blob):
             report["auth"] = "login"
 
-    listed, listed_kind, listed_detail = _probe_model(runner, binary, env, state_home, model)
+    listed, listed_kind, listed_detail = _probe_model(runner, binary, env, scratch, model)
     report["model_listed"] = listed
     report["model_listed_kind"] = listed_kind
     report["model_detail"] = listed_detail
-    report["isolated_home"] = _probe_isolated_home(runner, binary, env)
-    report["mcp_toggle"] = _probe_mcp_toggle(runner, binary, env, state_home)
+    if isolation == ISOLATION_HOME:
+        report["isolated_home"] = _probe_isolated_home(runner, binary, env, state_home)
+    else:
+        report["mcp_toggle"] = _probe_mcp_toggle(runner, binary, env, state_home)
 
     if isolation == ISOLATION_HOME and report["auth"] != "api_key":
         home_probe = dict(report["isolated_home"])
@@ -325,7 +373,7 @@ def run_cursor_preflight(
     return report
 
 
-def _probe_model(runner, binary, env, state_home, model) -> Tuple[Optional[bool], str, str]:
+def _probe_model(runner, binary, env, cwd: Path, model) -> Tuple[Optional[bool], str, str]:
     attempts = (
         [binary, "models"],
         [binary, "models", "list"],
@@ -333,7 +381,7 @@ def _probe_model(runner, binary, env, state_home, model) -> Tuple[Optional[bool]
     )
     errors: List[str] = []
     for command in attempts:
-        result = runner(command, dict(env), str(state_home), 20)
+        result = runner(command, dict(env), str(cwd), 20)
         text = (result.stdout or "") + "\n" + (result.stderr or "")
         if result.returncode == 0 and (result.stdout or "").strip():
             return (model in text), "exact", " ".join(command[1:])
@@ -341,10 +389,11 @@ def _probe_model(runner, binary, env, state_home, model) -> Tuple[Optional[bool]
     return None, "unavailable", "no models command succeeded: " + "; ".join(errors)
 
 
-def _probe_isolated_home(runner, binary, env) -> Dict[str, Any]:
+def _probe_isolated_home(runner, binary, env, state_home: Path) -> Dict[str, Any]:
     probe_home = Path(tempfile.mkdtemp(prefix="layer4-cursor-home-"))
     sentinel = "layer4-home-sentinel"
     try:
+        _preflight_cwd(probe_home, state_home)
         cursor_dir = probe_home / ".cursor"
         cursor_dir.mkdir(parents=True)
         (cursor_dir / "mcp.json").write_text(
@@ -359,55 +408,78 @@ def _probe_isolated_home(runner, binary, env) -> Dict[str, Any]:
         if honors:
             detail = (
                 "cursor-agent mcp list under a temp HOME showed the sentinel "
-                "server and did not show overhaust."
+                "server and did not show overhaust. "
+                + MCP_COMMANDS_NOTE
+                + " This probe called mcp list once and did not call mcp disable."
             )
         else:
             detail = (
                 "cursor-agent did not show that it honors HOME. Global MCP "
                 f"servers would still load. exit={listed.returncode}."
             )
-        return {"usable": honors, "detail": detail, "exit_code": listed.returncode}
+        return {
+            "checked": True,
+            "usable": honors,
+            "detail": detail,
+            "exit_code": listed.returncode,
+        }
     finally:
         shutil.rmtree(probe_home, ignore_errors=True)
 
 
 def _probe_mcp_toggle(runner, binary, env, state_home: Path) -> Dict[str, Any]:
-    guard = McpToggleGuard(state_home, binary, runner, env)
+    """Disable in a throwaway cwd and delete only the slug that command created."""
+    workspace = Path(tempfile.mkdtemp(prefix="layer4-cursor-mcp-probe-"))
+    toggle = WorkspaceMcpDisable(state_home, workspace, binary, runner, env)
     usable = False
     detail = "mcp-toggle probe did not finish"
-    before: Dict[str, Any] = {}
+    evidence: Dict[str, Any] = {}
+    cleanup: Dict[str, Any] = {"cleanup_verified": False}
     try:
-        before = guard.snapshot()
-        disabled = guard.disable()
-        if disabled.get("timed_out") or disabled.get("exit_code") not in (0,):
-            detail = "cursor-agent mcp disable overhaust failed. " + str(disabled.get("stderr") or "")
-        elif guard.overhaust_still_listed():
+        _preflight_cwd(workspace, state_home)
+        toggle.snapshot()
+        evidence = toggle.disable_and_verify()
+        if evidence.get("disable_timed_out") or evidence.get("disable_exit_code") not in (0,):
+            detail = "cursor-agent mcp disable overhaust failed in the throwaway workspace."
+        elif evidence.get("overhaust_listed"):
             detail = (
-                "cursor-agent mcp list still shows overhaust after disable. "
-                "mcp-toggle cannot hide the OverHaust MCP tools."
+                "cursor-agent mcp list from the throwaway workspace still shows "
+                "overhaust. mcp-toggle cannot hide the OverHaust MCP tools there."
+            )
+        elif evidence.get("refused_preexisting_slugs"):
+            detail = (
+                "mcp disable wrote into a pre-existing ~/.cursor/projects slug. "
+                "The harness did not modify that directory. "
+                + ", ".join(evidence.get("refused_preexisting_slugs") or [])
             )
         else:
             usable = True
             detail = (
-                "Disabled overhaust for the probe and will restore the snapshotted "
-                "MCP config. Other global MCP servers are not removed by this strategy."
+                "Disabled overhaust with cwd set to a throwaway workspace. "
+                "mcp list from that cwd did not show overhaust. "
+                "Other global MCP servers stay loaded. "
+                + MCP_COMMANDS_NOTE
             )
     except Exception as exc:
         usable = False
         detail = f"{type(exc).__name__}: {exc}"
-    restored: Dict[str, Any]
-    try:
-        restored = guard.restore()
-    except Exception as exc:
-        restored = {"restored": False, "detail": str(exc)}
-    if not restored.get("restored"):
+    finally:
+        try:
+            cleanup = toggle.cleanup()
+        except Exception as exc:
+            cleanup = {"cleanup_verified": False, "detail": str(exc)}
+        shutil.rmtree(workspace, ignore_errors=True)
+    if not cleanup.get("cleanup_verified"):
         usable = False
-        detail += " Restore of the MCP config failed: " + str(restored)
+        detail += " Cleanup of the project slug did not verify: " + json.dumps(cleanup)
     return {
+        "checked": True,
         "usable": usable,
         "detail": detail,
-        "overhaust_listed_before": before.get("overhaust_listed"),
-        "restore": restored,
+        "cleanup": cleanup,
+        "created_slugs": evidence.get("created_slugs"),
+        "refused_preexisting_slugs": evidence.get("refused_preexisting_slugs"),
+        "note": MCP_COMMANDS_NOTE,
     }
 
 
@@ -480,28 +552,64 @@ def _execute_session(
     measured = False
     after_hash: Optional[str] = None
     before_agent = None
+    toggle: Optional[WorkspaceMcpDisable] = None
+    isolation_evidence: Dict[str, Any] = {
+        "strategy": config.isolation,
+        "applied": config.isolation != ISOLATION_MCP,
+        "mcp_disable_called": False,
+        "note": (
+            MCP_COMMANDS_NOTE
+            if config.isolation == ISOLATION_MCP
+            else "isolated-home uses a temp HOME. This session does not call mcp disable or mcp list."
+        ),
+    }
 
-    if prepared.restore_verified and prepared.layout.ok and dest.is_dir():
-        before_agent = capture_repository_snapshot(str(dest))
-        launch_error = None
-        try:
-            result = runner(command, child_env, str(dest), config.timeout_s)
-        except Exception as exc:
-            launch_error = f"{type(exc).__name__}: {exc}"
-            result = None
-        if result is not None:
-            stdout = result.stdout
-            stderr = redact_cursor(result.stderr, child_env)
-            exit_code = result.returncode
-            timed_out = result.timed_out
-            elapsed = result.elapsed_ms
-            if result.timed_out:
-                launch_error = f"cursor-agent exceeded {config.timeout_s}s"
-        if before_agent is not None and dest.is_dir():
-            after = capture_repository_snapshot(str(dest))
-            after_hash = after.get("tree_hash")
-            files_changed = diff_snapshot_paths(before_agent, after)
-            measured = True
+    try:
+        if config.isolation == ISOLATION_MCP and dest.is_dir():
+            toggle = WorkspaceMcpDisable(state_home, dest, binary, runner, child_env)
+            try:
+                toggle.snapshot()
+                isolation_evidence = toggle.disable_and_verify()
+            except Exception as exc:
+                isolation_evidence = {
+                    "strategy": ISOLATION_MCP,
+                    "applied": False,
+                    "mcp_disable_called": True,
+                    "overhaust_listed": True,
+                    "disable_exit_code": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "note": MCP_COMMANDS_NOTE,
+                }
+                launch_error = isolation_evidence["error"]
+
+        if prepared.restore_verified and prepared.layout.ok and dest.is_dir() and launch_error is None:
+            before_agent = capture_repository_snapshot(str(dest))
+            launch_error = None
+            try:
+                result = runner(command, child_env, str(dest), config.timeout_s)
+            except Exception as exc:
+                launch_error = f"{type(exc).__name__}: {exc}"
+                result = None
+            if result is not None:
+                stdout = result.stdout
+                stderr = redact_cursor(result.stderr, child_env)
+                exit_code = result.returncode
+                timed_out = result.timed_out
+                elapsed = result.elapsed_ms
+                if result.timed_out:
+                    launch_error = f"cursor-agent exceeded {config.timeout_s}s"
+            if before_agent is not None and dest.is_dir():
+                after = capture_repository_snapshot(str(dest))
+                after_hash = after.get("tree_hash")
+                files_changed = diff_snapshot_paths(before_agent, after)
+                measured = True
+    finally:
+        if toggle is not None:
+            try:
+                isolation_evidence.update(toggle.cleanup())
+            except Exception as exc:
+                isolation_evidence["cleanup_verified"] = False
+                isolation_evidence["cleanup_error"] = f"{type(exc).__name__}: {exc}"
 
     post_layout = prepared.layout
     if dest.is_dir():
@@ -571,6 +679,7 @@ def _execute_session(
         finished_at=finished,
         overhaust_commit=commit,
         prompt_file_written=prompt_written,
+        isolation_evidence=isolation_evidence,
     )
     return session_from_capture(capture, task)
 
@@ -920,14 +1029,21 @@ def _methodology() -> str:
         "",
         "Two isolation strategies are implemented. `isolated-home` runs each "
         "session with HOME set to an empty directory and authenticates with "
-        "CURSOR_API_KEY. No credential files are copied. Preflight checks "
-        "whether `cursor-agent mcp list` honors that HOME. `mcp-toggle` "
-        "snapshots the user MCP config, runs `cursor-agent mcp disable overhaust` "
-        "for both conditions, then restores and checks the snapshot. "
-        "mcp-toggle does not remove other account MCP servers. Neither "
-        "condition is given the OverHaust MCP tools on purpose: the treatment "
-        "is the hook. A session that calls or catalogs an OverHaust MCP tool "
-        "is invalid.",
+        "CURSOR_API_KEY. No credential files are copied. Its preflight checks "
+        "whether `cursor-agent mcp list` honors that HOME, and it does not "
+        "call `mcp disable`. `mcp-toggle` runs `cursor-agent mcp disable overhaust` "
+        "with cwd set to each session's fresh temp workspace (both conditions "
+        "the same way), then `mcp list` from that same cwd. The CLI writes "
+        "`~/.cursor/projects/<slug>/mcp-disabled.json` for that cwd. The "
+        "harness finds the slug by diffing `~/.cursor/projects` and deletes "
+        "only directories that appeared for that call. A slug that already "
+        "existed is not modified. Preflight does the same in a throwaway "
+        "directory and probes only the strategy named by `--isolation`. "
+        "No preflight command uses the user home or a project directory as "
+        "cwd. `mcp list` and `mcp disable` start MCP servers, so each "
+        "workspace calls each of them once. Other global MCP servers stay "
+        "loaded under mcp-toggle. A session where overhaust is still listed "
+        "or loaded is invalid.",
         "",
         "Injection is checked from the hook debug record (fired, error, exact "
         "context bytes, ESTIMATED TokenEstimator tokens, latency). When "
@@ -946,6 +1062,29 @@ def _methodology() -> str:
         "",
         CURSOR_CLAIM_POLICY,
     ])
+
+
+def _mcp_cleanup_report(
+    sessions: Sequence[Layer4SessionResult],
+    isolation: str,
+) -> Optional[Dict[str, Any]]:
+    if isolation != ISOLATION_MCP:
+        return None
+    rows = []
+    ok = True
+    for session in sessions:
+        evidence = (session.supplemental_telemetry or {}).get("isolation_evidence") or {}
+        verified = evidence.get("cleanup_verified") is True
+        ok = ok and verified
+        rows.append({
+            "session_id": session.session_id,
+            "cleanup_verified": verified,
+            "created_slugs": evidence.get("created_slugs"),
+            "removed_slugs": evidence.get("removed_slugs"),
+            "refused_preexisting_slugs": evidence.get("refused_preexisting_slugs"),
+            "overhaust_listed": evidence.get("overhaust_listed"),
+        })
+    return {"cleanup_verified": ok, "restored": ok, "sessions": rows}
 
 
 def _integration_mode(condition: str) -> str:
@@ -1018,7 +1157,7 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
         probe = config.probe
         sessions: List[Layer4SessionResult] = []
         state_restore: Optional[Dict[str, Any]] = None
-        mcp_restore: Optional[Dict[str, Any]] = None
+        mcp_cleanup: Optional[Dict[str, Any]] = None
         reserved = allocate_cursor_result_paths(results_dir, config.stamp)
         used_stamp = str(reserved["stamp"])
 
@@ -1051,22 +1190,6 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
                 )
             guard = CursorStateGuard(state_home)
             guard.snapshot()
-            mcp_guard = None
-            if config.isolation == ISOLATION_MCP:
-                mcp_guard = McpToggleGuard(state_home, binary, runner, env)
-                mcp_guard.snapshot()
-                disabled = mcp_guard.disable()
-                still_listed = False
-                if disabled.get("exit_code") in (0,) and not disabled.get("timed_out"):
-                    still_listed = mcp_guard.overhaust_still_listed()
-                if disabled.get("exit_code") not in (0,) or disabled.get("timed_out") or still_listed:
-                    mcp_guard.restore()
-                    guard.restore()
-                    raise PreflightError(
-                        "cursor-agent mcp disable overhaust failed. Restored the snapshot. "
-                        + str(disabled)
-                        + (" overhaust was still listed." if still_listed else "")
-                    )
             run_dir = Path(tempfile.mkdtemp(prefix="layer4-cursor-"))
             try:
                 for plan in plans:
@@ -1104,8 +1227,7 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
             finally:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 state_restore = guard.restore()
-                if mcp_guard is not None:
-                    mcp_restore = mcp_guard.restore()
+                mcp_cleanup = _mcp_cleanup_report(sessions, config.isolation)
         else:
             probe = probe or CursorProbe(
                 agent="cursor",
@@ -1186,7 +1308,7 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
             "context_metrics": _context_metrics(sessions),
             "preflight": preflight,
             "state_restore": state_restore,
-            "mcp_restore": mcp_restore,
+            "mcp_cleanup": mcp_cleanup,
             "output_dir": output_dir,
             "token_accounting_note": CURSOR_TOKEN_ACCOUNTING,
             "comparability": (
