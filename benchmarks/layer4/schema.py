@@ -201,6 +201,11 @@ class Layer4SessionResult:
     finished_at: str = ""
     prompt_sha256: str = ""
     agent_version_warning: Optional[str] = None
+    # Counterbalanced slot when this session was filtered from the
+    # two-condition plan. Omitted from to_dict when unset, so a
+    # two-condition record stays the same.
+    original_pair_id: Optional[str] = None
+    original_planned_position: Optional[int] = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -224,6 +229,10 @@ class Layer4SessionResult:
                 "condition_order must be 'baseline->overhaust' or "
                 f"'overhaust->baseline', got {self.condition_order!r}"
             )
+        if self.original_planned_position is not None and self.original_planned_position < 0:
+            raise ValueError("original_planned_position must be >= 0")
+        if self.original_pair_id is not None and not self.original_pair_id:
+            raise ValueError("original_pair_id must be non-empty when set")
 
         for name in METRIC_FIELDS:
             figure = getattr(self, name)
@@ -268,6 +277,10 @@ class Layer4SessionResult:
         data = asdict(self)
         for name in METRIC_FIELDS:
             data[name] = getattr(self, name).to_dict()
+        if data.get("original_pair_id") is None:
+            data.pop("original_pair_id", None)
+        if data.get("original_planned_position") is None:
+            data.pop("original_planned_position", None)
         return data
 
     @classmethod

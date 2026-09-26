@@ -100,6 +100,8 @@ class CodexSessionCapture:
     pair_id: str = ""
     order_in_pair: int = 1
     condition_order: str = ""
+    original_pair_id: Optional[str] = None
+    original_planned_position: Optional[int] = None
 
 
 class CodexAdapter:
@@ -389,6 +391,8 @@ def session_from_capture(
         order_in_pair=capture.order_in_pair,
         condition_order=condition_order,
         execution_order=capture.execution_order,
+        original_pair_id=capture.original_pair_id,
+        original_planned_position=capture.original_planned_position,
         snapshot_hash=capture.snapshot_hash,
         snapshot_hash_before=capture.snapshot_hash_before,
         snapshot_hash_after=capture.snapshot_hash_after,

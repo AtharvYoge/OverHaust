@@ -43,6 +43,7 @@ from benchmarks.layer4.matrix import (
     PILOT_SEED,
     SessionPlan,
     load_preset_tasks,
+    normalize_conditions,
     plan_matrix,
     preset_reps,
 )
@@ -102,6 +103,9 @@ class RunConfig:
     python: Optional[str] = None
     stamp: Optional[str] = None
     preset: str = PILOT_NAME
+    # None means both conditions. A single name keeps that condition's
+    # sessions from the same pair-counterbalanced plan.
+    conditions: Optional[Sequence[str]] = None
 
 
 def _now() -> str:
@@ -277,6 +281,8 @@ def _error_result(
         order_in_pair=plan.order_in_pair,
         condition_order=plan.condition_order,
         execution_order=plan.execution_order,
+        original_pair_id=plan.original_pair_id,
+        original_planned_position=plan.original_planned_position,
         snapshot_hash=snapshot_hash,
         snapshot_hash_before=None,
         snapshot_hash_after=None,
@@ -405,6 +411,8 @@ def _execute_session(
         pair_id=plan.pair_id,
         order_in_pair=plan.order_in_pair,
         condition_order=plan.condition_order,
+        original_pair_id=plan.original_pair_id,
+        original_planned_position=plan.original_planned_position,
         snapshot_hash=workspace.snapshot_hash,
         prompt=plan.prompt,
         model_requested=config.model,
@@ -667,7 +675,12 @@ def _order_entry(source: Any, sequence: int) -> Dict[str, Any]:
             return source[key]
         return getattr(source, key)
 
-    return {
+    def read_optional(key: str) -> Any:
+        if isinstance(source, dict):
+            return source.get(key)
+        return getattr(source, key, None)
+
+    entry = {
         "sequence": sequence,
         "execution_order": read("execution_order"),
         "session_id": read("session_id"),
@@ -679,6 +692,52 @@ def _order_entry(source: Any, sequence: int) -> Dict[str, Any]:
         "rep": read("rep"),
         "seed": read("seed"),
     }
+    original_pair_id = read_optional("original_pair_id")
+    original_position = read_optional("original_planned_position")
+    if original_pair_id is not None:
+        entry["original_pair_id"] = original_pair_id
+    if original_position is not None:
+        entry["original_planned_position"] = original_position
+    return entry
+
+
+def _single_condition(report: Dict[str, Any]) -> Optional[str]:
+    conditions = report.get("conditions") or []
+    if len(conditions) == 1:
+        return str(conditions[0])
+    return None
+
+
+def _append_execution_table(
+    lines: List[str],
+    entries: Sequence[Dict[str, Any]],
+    *,
+    show_origin: bool,
+) -> None:
+    if show_origin:
+        lines.extend([
+            "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep | Original position |",
+            "|----:|---------|------|--------:|-----------------|-----------|------|----:|------------------:|",
+        ])
+    else:
+        lines.extend([
+            "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep |",
+            "|----:|---------|------|--------:|-----------------|-----------|------|----:|",
+        ])
+    for entry in entries:
+        row = "| {seq} | `{sid}` | `{pair}` | {pos} | `{order}` | {cond} | `{task}` | {rep} |".format(
+            seq=entry.get("sequence"),
+            sid=entry.get("session_id"),
+            pair=entry.get("pair_id"),
+            pos=entry.get("order_in_pair"),
+            order=entry.get("condition_order"),
+            cond=entry.get("condition"),
+            task=entry.get("task_id"),
+            rep=entry.get("rep"),
+        )
+        if show_origin:
+            row += " {origin} |".format(origin=entry.get("original_planned_position"))
+        lines.append(row)
 
 
 def _fmt_number(value: Any) -> str:
@@ -709,24 +768,30 @@ def _markdown(report: Dict[str, Any]) -> str:
         f"- Sessions recorded: {report.get('recorded_session_count')}",
         f"- Sessions dropped: {report.get('dropped_session_count')}",
         "",
+    ]
+    single = _single_condition(report)
+    if single:
+        lines.extend([
+            f"This is a single-condition run (`{single}` only). "
+            "No cross-condition comparison or reduction is reported.",
+            "",
+        ])
+    lines.extend([
         "## Planned execution order",
         "",
-        "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep |",
-        "|----:|---------|------|--------:|-----------------|-----------|------|----:|",
-    ]
-    for entry in report.get("planned_execution_order") or []:
-        lines.append(
-            "| {seq} | `{sid}` | `{pair}` | {pos} | `{order}` | {cond} | `{task}` | {rep} |".format(
-                seq=entry.get("sequence"),
-                sid=entry.get("session_id"),
-                pair=entry.get("pair_id"),
-                pos=entry.get("order_in_pair"),
-                order=entry.get("condition_order"),
-                cond=entry.get("condition"),
-                task=entry.get("task_id"),
-                rep=entry.get("rep"),
-            )
-        )
+    ])
+    _append_execution_table(
+        lines,
+        report.get("planned_execution_order") or [],
+        show_origin=single is not None,
+    )
+    if single:
+        lines.extend([
+            "",
+            "Seq is the order sessions run in this single-condition plan. "
+            "Original position is that session's execution_order in the "
+            "two-condition plan for this seed. Pair is the original pair id.",
+        ])
     lines.extend([
         "",
         "## Actual execution order",
@@ -737,23 +802,7 @@ def _markdown(report: Dict[str, Any]) -> str:
         lines.append("No sessions were executed.")
         lines.append("")
     else:
-        lines.extend([
-            "| Seq | Session | Pair | In pair | Condition order | Condition | Task | Rep |",
-            "|----:|---------|------|--------:|-----------------|-----------|------|----:|",
-        ])
-        for entry in actual:
-            lines.append(
-                "| {seq} | `{sid}` | `{pair}` | {pos} | `{order}` | {cond} | `{task}` | {rep} |".format(
-                    seq=entry.get("sequence"),
-                    sid=entry.get("session_id"),
-                    pair=entry.get("pair_id"),
-                    pos=entry.get("order_in_pair"),
-                    order=entry.get("condition_order"),
-                    cond=entry.get("condition"),
-                    task=entry.get("task_id"),
-                    rep=entry.get("rep"),
-                )
-            )
+        _append_execution_table(lines, actual, show_origin=single is not None)
         lines.append("")
 
     lines.extend([
@@ -799,6 +848,13 @@ def _markdown(report: Dict[str, Any]) -> str:
         "",
         (report.get("cache_analysis") or {}).get("note") or CACHE_ANALYSIS_NOTE,
         "",
+    ])
+    if single:
+        lines.extend([
+            f"Figures below are for `{single}` only.",
+            "",
+        ])
+    lines.extend([
         "| Task | Condition | n | Mean input | Mean cached | Cached rate | Mean output | Mean total | Excluded |",
         "|------|-----------|--:|-----------:|------------:|------------:|------------:|-----------:|----------|",
     ])
@@ -833,6 +889,13 @@ def _markdown(report: Dict[str, Any]) -> str:
         "",
         "## Agent behavior",
         "",
+    ])
+    if single:
+        lines.extend([
+            f"Tool-call figures below are for `{single}` only.",
+            "",
+        ])
+    lines.extend([
         "| Task | Condition | n | Mean tool calls | Zero-tool sessions | Tool calls unavailable | Invalid excluded |",
         "|------|-----------|--:|----------------:|-------------------:|-----------------------:|-----------------:|",
     ])
@@ -922,7 +985,11 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
         )
     tasks = load_preset_tasks(config.preset)
     reps = preset_reps(config.preset)
-    plans = plan_matrix(tasks, seed=config.seed, reps=reps)
+    try:
+        selected = normalize_conditions(config.conditions)
+    except ValueError as exc:
+        raise PreflightError(str(exc)) from exc
+    plans = plan_matrix(tasks, seed=config.seed, reps=reps, conditions=selected)
     by_id = {task.task_id: task for task in tasks}
     env = dict(config.env if config.env is not None else os.environ)
     repo_root = config.repo_root or Path(__file__).resolve().parents[2]
@@ -1005,6 +1072,14 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
         summary = _summarize(sessions)
         planned_order = [_order_entry(plan, index) for index, plan in enumerate(plans)]
         actual_order = [_order_entry(session, index) for index, session in enumerate(sessions)]
+        order_policy = EXECUTION_ORDER_POLICY
+        if len(selected) == 1:
+            order_policy = (
+                f"{EXECUTION_ORDER_POLICY} This run keeps only the {selected[0]} "
+                "sessions from that plan, in the same relative order. "
+                "original_pair_id is the pair id from the two-condition plan. "
+                "original_planned_position is that plan's execution_order."
+            )
         report: Dict[str, Any] = {
             "schema_version": RUN_SCHEMA_VERSION,
             "protocol_version": PROTOCOL_VERSION,
@@ -1017,7 +1092,7 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
             "cache_control_note": PROMPT_CACHE_POLICY,
             "generated_at": _now(),
             "seed": config.seed,
-            "execution_order_policy": EXECUTION_ORDER_POLICY,
+            "execution_order_policy": order_policy,
             "agent": "codex",
             "agent_version": probe.version,
             "agent_version_source": probe.version_source,
@@ -1032,7 +1107,7 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
             "repository": str(workspace.root),
             "task_ids": [task.task_id for task in tasks],
             "reps": reps,
-            "conditions": ["baseline", "overhaust"],
+            "conditions": list(selected),
             "planned_session_count": len(plans),
             "recorded_session_count": len(sessions),
             "dropped_session_count": len(plans) - len(sessions) if not config.dry_run else 0,
@@ -1054,6 +1129,8 @@ def run_pilot(config: Optional[RunConfig] = None) -> Dict[str, Any]:
                 "are never subtracted or mixed into cache analysis."
             ),
         }
+        if len(selected) == 1:
+            report["single_condition"] = selected[0]
         if config.dry_run:
             report["dry_run_note"] = (
                 "No Codex process was started. This file is the session plan, "

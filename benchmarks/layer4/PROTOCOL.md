@@ -57,6 +57,8 @@ Every cell of the matrix is its own session:
 
 Default seed is 1. Dry run writes the plan for either preset and launches nothing.
 
+`--conditions` selects which conditions run. The default is both (`baseline` and `overhaust`). One condition, for example `--conditions baseline`, builds the same pair-counterbalanced plan for that seed and then keeps only that condition's sessions, in the same relative order. Fixture, prompts, scoring, tool configuration, seed, and timeout do not change. Baseline still has no `hooks.json`. Each kept session records `original_pair_id` and `original_planned_position` (the pair id and `execution_order` from the two-condition plan). A single-condition report says so, and it does not report a cross-condition comparison or a reduction. Cache analysis and agent-behavior tables are still written for the condition that ran.
+
 ## Condition order
 
 Each `(task, rep)` is a pair unit. Both sessions of a pair run adjacently.
@@ -77,6 +79,15 @@ Every session result records `pair_id` (`{task_id}-r{rep}`), `order_in_pair`
 (1 or 2), `condition_order`, and `seed`. The run result records
 `planned_execution_order` and `actual_execution_order`. A dry run has a
 planned order and an empty actual order.
+
+A single-condition run does not draw a new shuffle. After the pair plan
+above is built, sessions of the other condition are dropped and the kept
+sessions stay in that relative order. `execution_order` is then the index
+among sessions this run will execute. `original_pair_id` repeats the pair
+id, and `original_planned_position` is the `execution_order` that session
+had in the two-condition plan, so the record shows which counterbalanced
+slot it came from. With both conditions selected, those two fields are
+omitted and `execution_order` is the pair-plan sequence.
 
 ## What counts as a valid session
 

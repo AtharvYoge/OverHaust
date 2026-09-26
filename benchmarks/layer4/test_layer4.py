@@ -28,6 +28,7 @@ from benchmarks.layer4.condition import (
     build_exec_env,
     prepare_codex_home,
 )
+from benchmarks.layer4.cli import main
 from benchmarks.layer4.matrix import (
     FULL_TASK_IDS,
     PILOT_CONDITIONS,
@@ -36,10 +37,13 @@ from benchmarks.layer4.matrix import (
     PILOT_TASK_IDS,
     load_full_tasks,
     load_pilot_tasks,
+    normalize_conditions,
     plan_matrix,
 )
 from benchmarks.layer4.runner import (
+    EXECUTION_ORDER_POLICY,
     Layer4Workspace,
+    PreflightError,
     ProcessResult,
     RunConfig,
     agent_behavior,
@@ -1089,3 +1093,304 @@ def test_markdown_session_table_includes_tool_call_counts(tmp_path: Path):
     assert over_rows
     assert all(row["zero_tool_call_sessions"] == row["n_sessions"] for row in over_rows)
     assert all(row["mean_tool_calls"] == 0 for row in over_rows)
+
+
+# Baseline rows of benchmarks/results/layer4-20260926T081938Z.json
+# actual_execution_order, seed 1, preset full. That file is a local result
+# (gitignored). The order is the baseline half of the locked two-condition plan.
+FULL_SEED1_BASELINE_ORDER = (
+    ("cross_order_to_printer", 0),
+    ("flow_order_to_kitchen", 1),
+    ("flow_order_to_kitchen", 0),
+    ("cross_order_to_printer", 1),
+    ("arch_kitchen_hardware", 0),
+    ("arch_kitchen_hardware", 1),
+    ("sym_generate_kot", 0),
+    ("impact_change_generate_kot", 0),
+    ("sym_generate_kot", 1),
+    ("impact_change_generate_kot", 1),
+)
+FULL_SEED1_BASELINE_POSITIONS = (1, 3, 4, 6, 9, 10, 12, 15, 17, 18)
+RECORDED_FULL_RUN = (
+    Path(__file__).resolve().parents[1] / "results" / "layer4-20260926T081938Z.json"
+)
+
+
+def test_baseline_only_seed1_full_order_matches_recorded_baseline_sessions():
+    tasks = load_full_tasks()
+    full = plan_matrix(tasks, seed=PILOT_SEED)
+    baseline = plan_matrix(tasks, seed=PILOT_SEED, conditions=("baseline",))
+    overhaust = plan_matrix(tasks, seed=PILOT_SEED, conditions="overhaust")
+    full_baseline = [plan for plan in full if plan.condition == "baseline"]
+    full_overhaust = [plan for plan in full if plan.condition == "overhaust"]
+
+    assert [(plan.task_id, plan.rep) for plan in full_baseline] == list(FULL_SEED1_BASELINE_ORDER)
+    assert [plan.execution_order for plan in full_baseline] == list(FULL_SEED1_BASELINE_POSITIONS)
+    assert [(plan.task_id, plan.rep) for plan in baseline] == list(FULL_SEED1_BASELINE_ORDER)
+    assert [plan.execution_order for plan in baseline] == list(range(10))
+    assert len(baseline) == 10
+    for index, (kept, source) in enumerate(zip(baseline, full_baseline)):
+        assert kept.session_id == source.session_id
+        assert kept.condition == "baseline"
+        assert kept.pair_id == source.pair_id == f"{source.task_id}-r{source.rep}"
+        assert kept.original_pair_id == source.pair_id
+        assert kept.original_planned_position == source.execution_order == FULL_SEED1_BASELINE_POSITIONS[index]
+        assert kept.order_in_pair == source.order_in_pair
+        assert kept.condition_order == source.condition_order
+        assert kept.prompt == source.prompt
+        assert kept.project_id == source.project_id
+        assert kept.seed == source.seed == PILOT_SEED
+        assert kept.rep == source.rep
+        recorded = kept.to_dict()
+        assert recorded["original_pair_id"] == source.pair_id
+        assert recorded["original_planned_position"] == source.execution_order
+    assert [(plan.task_id, plan.rep) for plan in overhaust] == [
+        (plan.task_id, plan.rep) for plan in full_overhaust
+    ]
+    assert [plan.original_planned_position for plan in overhaust] == [
+        plan.execution_order for plan in full_overhaust
+    ]
+
+    if RECORDED_FULL_RUN.is_file():
+        payload = json.loads(RECORDED_FULL_RUN.read_text(encoding="utf-8"))
+        recorded_baseline = [
+            (entry["task_id"], entry["rep"])
+            for entry in payload["actual_execution_order"]
+            if entry["condition"] == "baseline"
+        ]
+        assert recorded_baseline == list(FULL_SEED1_BASELINE_ORDER)
+
+
+def test_default_conditions_keep_two_condition_plan_and_report(tmp_path: Path):
+    tasks = load_full_tasks()
+    default = plan_matrix(tasks, seed=PILOT_SEED)
+    explicit = plan_matrix(tasks, seed=PILOT_SEED, conditions=("baseline", "overhaust"))
+    reversed_both = plan_matrix(tasks, seed=PILOT_SEED, conditions=("overhaust", "baseline"))
+    comma_both = plan_matrix(tasks, seed=PILOT_SEED, conditions="baseline,overhaust")
+    assert [plan.to_dict() for plan in default] == [plan.to_dict() for plan in explicit]
+    assert [plan.to_dict() for plan in default] == [plan.to_dict() for plan in reversed_both]
+    assert [plan.to_dict() for plan in default] == [plan.to_dict() for plan in comma_both]
+    assert len(default) == 20
+    assert [plan.execution_order for plan in default] == list(range(20))
+    assert set(default[0].to_dict()) == {
+        "session_id",
+        "task_id",
+        "condition",
+        "rep",
+        "seed",
+        "execution_order",
+        "prompt",
+        "project_id",
+        "pair_id",
+        "order_in_pair",
+        "condition_order",
+    }
+    assert all(plan.original_pair_id is None and plan.original_planned_position is None for plan in default)
+    assert normalize_conditions(None) == PILOT_CONDITIONS
+    pilot = plan_matrix(load_pilot_tasks(), seed=PILOT_SEED)
+    assert len(pilot) == 8
+    assert [(plan.task_id, plan.condition, plan.rep) for plan in pilot] == [
+        (plan.task_id, plan.condition, plan.rep)
+        for plan in plan_matrix(load_pilot_tasks(), seed=PILOT_SEED, conditions=None)
+    ]
+
+    report = run_pilot(
+        RunConfig(
+            preset="full",
+            dry_run=True,
+            seed=PILOT_SEED,
+            model="gpt-4o",
+            results_dir=tmp_path / "results",
+            env={},
+            command_runner=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("dry run launched Codex")
+            ),
+            workspace_builder=_workspace(tmp_path, tasks),
+            stamp="default-both",
+        )
+    )
+    assert report["conditions"] == ["baseline", "overhaust"]
+    assert "single_condition" not in report
+    assert report["planned_session_count"] == 20
+    assert report["execution_order_policy"] == EXECUTION_ORDER_POLICY
+    assert report["cache_control_note"] == PROMPT_CACHE_POLICY
+    assert "original_planned_position" not in report["plans"][0]
+    assert "original_pair_id" not in report["planned_execution_order"][0]
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert "single-condition" not in md
+    assert "Original position" not in md
+    assert PROMPT_CACHE_POLICY in md
+    assert "## Cache analysis" in md
+    assert "## Agent behavior" in md
+    with pytest.raises(ValueError):
+        plan_matrix(tasks, conditions=("baseline", "other"))
+    bad_ws = tmp_path / "bad-ws"
+    bad_ws.mkdir()
+    with pytest.raises(PreflightError, match="duplicates"):
+        run_pilot(
+            RunConfig(
+                preset="pilot",
+                dry_run=True,
+                conditions=("baseline", "baseline"),
+                results_dir=tmp_path / "bad",
+                env={},
+                workspace_builder=_workspace(bad_ws, load_pilot_tasks()),
+            )
+        )
+
+
+def test_single_condition_report_and_markdown_omit_comparison(tmp_path: Path):
+    tasks = load_full_tasks()
+    seen = []
+
+    def fake_runner(command, env, cwd, timeout):
+        home = Path(env["CODEX_HOME"])
+        assert not (home / "hooks.json").exists()
+        assert command[command.index("--model") + 1] == "gpt-4o"
+        assert "--dangerously-bypass-hook-trust" in command
+        seen.append(command[-1])
+        return ProcessResult(0, COMPLETED, "", 5, False)
+
+    report = run_pilot(
+        RunConfig(
+            preset="full",
+            model="gpt-4o",
+            seed=PILOT_SEED,
+            conditions=["baseline"],
+            timeout_s=600,
+            results_dir=tmp_path / "results",
+            codex_bin="codex",
+            env={"OPENAI_API_KEY": "sk-test-secret"},
+            command_runner=fake_runner,
+            workspace_builder=_workspace(tmp_path, tasks),
+            probe=CodexProbe("codex", "0.146.0", "codex_cli_version", "codex"),
+            stamp="baseline-only",
+        )
+    )
+    assert report["conditions"] == ["baseline"]
+    assert report["single_condition"] == "baseline"
+    assert report["planned_session_count"] == 10
+    assert report["recorded_session_count"] == 10
+    assert report["dropped_session_count"] == 0
+    assert report["mode"] == "full"
+    assert report["seed"] == PILOT_SEED
+    assert report["reps"] == 2
+    assert report["cache_control_note"] == PROMPT_CACHE_POLICY
+    assert [session["condition"] for session in report["sessions"]] == ["baseline"] * 10
+    assert [(session["task_id"], session["rep"]) for session in report["sessions"]] == list(
+        FULL_SEED1_BASELINE_ORDER
+    )
+    assert [entry["original_planned_position"] for entry in report["planned_execution_order"]] == list(
+        FULL_SEED1_BASELINE_POSITIONS
+    )
+    assert [entry["original_pair_id"] for entry in report["actual_execution_order"]] == [
+        f"{task_id}-r{rep}" for task_id, rep in FULL_SEED1_BASELINE_ORDER
+    ]
+    for session in report["sessions"]:
+        assert session["original_pair_id"] == session["pair_id"]
+        assert session["original_planned_position"] in FULL_SEED1_BASELINE_POSITIONS
+        assert session["integration_path"] == "none"
+        assert session["hook_command"] is None
+        assert "original_planned_position" in session
+    assert {row["condition"] for row in report["cache_analysis"]["by_condition"]} == {"baseline"}
+    assert {row["condition"] for row in report["cache_analysis"]["by_task_condition"]} == {"baseline"}
+    assert report["agent_behavior"]["by_task_condition"]
+    assert {row["condition"] for row in report["agent_behavior"]["by_task_condition"]} == {"baseline"}
+    assert len(seen) == 10
+
+    md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert "This is a single-condition run (`baseline` only). " in md
+    assert "No cross-condition comparison or reduction is reported." in md
+    assert PROMPT_CACHE_POLICY in md
+    assert md.count(PROMPT_CACHE_POLICY) >= 2
+    assert "## Cache analysis" in md
+    assert "## Agent behavior" in md
+    assert "Figures below are for `baseline` only." in md
+    assert "Tool-call figures below are for `baseline` only." in md
+    assert "| baseline |" in md
+    assert "Original position" in md
+    assert "| Tools |" in md
+    lowered = md.lower()
+    for phrase in (
+        "compared with",
+        "compared to",
+        "percent reduction",
+        "reduction_pct",
+        "fewer tokens",
+        "| reduction |",
+    ):
+        assert phrase not in lowered
+
+    dry_ws = tmp_path / "dry-ws"
+    dry_ws.mkdir()
+    dry = run_pilot(
+        RunConfig(
+            preset="full",
+            dry_run=True,
+            seed=PILOT_SEED,
+            model="gpt-4o",
+            conditions=("baseline",),
+            timeout_s=600,
+            results_dir=tmp_path / "dry",
+            env={},
+            command_runner=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("dry run launched Codex")
+            ),
+            workspace_builder=_workspace(dry_ws, tasks),
+            stamp="baseline-dry",
+        )
+    )
+    assert dry["planned_session_count"] == 10
+    assert dry["recorded_session_count"] == 0
+    assert dry["actual_execution_order"] == []
+    assert dry["conditions"] == ["baseline"]
+    assert dry["model_requested"] == "gpt-4o"
+    dry_md = Path(dry["_output_paths"]["md"]).read_text(encoding="utf-8")
+    assert "This is a single-condition run (`baseline` only)." in dry_md
+    assert "## Cache analysis" in dry_md
+    assert "## Agent behavior" in dry_md
+    assert PROMPT_CACHE_POLICY in dry_md
+
+
+def test_cli_dry_run_full_baseline_plans_ten_sessions(tmp_path: Path, monkeypatch):
+    tasks = load_full_tasks()
+    monkeypatch.setattr(
+        "benchmarks.layer4.runner.build_fixture_workspace",
+        _workspace(tmp_path, tasks),
+    )
+    results = tmp_path / "results"
+    code = main([
+        "--dry-run",
+        "--preset",
+        "full",
+        "--conditions",
+        "baseline",
+        "--model",
+        "gpt-4o",
+        "--results-dir",
+        str(results),
+        "--seed",
+        "1",
+    ])
+    assert code == 0
+    report = json.loads(next(results.glob("layer4-*.json")).read_text(encoding="utf-8"))
+    assert report["planned_session_count"] == 10
+    assert report["recorded_session_count"] == 0
+    assert report["conditions"] == ["baseline"]
+    assert report["model_requested"] == "gpt-4o"
+    assert report["seed"] == 1
+    assert report["preset"] == "full"
+    assert [(entry["task_id"], entry["rep"]) for entry in report["planned_execution_order"]] == list(
+        FULL_SEED1_BASELINE_ORDER
+    )
+    md = next(results.glob("layer4-*.md")).read_text(encoding="utf-8")
+    assert "single-condition" in md
+    assert PROMPT_CACHE_POLICY in md
+
+    default_results = tmp_path / "default"
+    code = main(["--dry-run", "--results-dir", str(default_results), "--seed", "1"])
+    assert code == 0
+    default_report = json.loads(next(default_results.glob("layer4-*.json")).read_text(encoding="utf-8"))
+    assert default_report["conditions"] == ["baseline", "overhaust"]
+    assert default_report["planned_session_count"] == 8
+    assert "single_condition" not in default_report
