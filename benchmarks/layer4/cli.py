@@ -190,6 +190,9 @@ def _main_cursor(args: argparse.Namespace) -> int:
     if mcp_cleanup and not mcp_cleanup.get("cleanup_verified", True):
         print("mcp-disabled.json cleanup did not verify.", file=sys.stderr)
         return 2
+    if report.get("stopped_early"):
+        print(report.get("stop_reason") or "Stopped: OverHaust MCP tool present.", file=sys.stderr)
+        return 2
     return 0
 
 

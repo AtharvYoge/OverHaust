@@ -40,6 +40,7 @@ from benchmarks.layer4.cursor_condition import (
     MCP_COMMANDS_NOTE,
     PROMPT_CACHE_POLICY,
     CursorStateGuard,
+    ProjectSlugGuard,
     WorkspaceMcpDisable,
     build_cursor_command,
     build_cursor_env,
@@ -55,7 +56,7 @@ from benchmarks.layer4.cursor_parse import (
     TELEMETRY_CATALOG,
     parse_stream_json,
 )
-from benchmarks.layer4.cursor_store import inspect_session_store
+from benchmarks.layer4.cursor_store import inspect_session_store, release_sqlite_resources
 from benchmarks.layer4.matrix import (
     FULL_NAME,
     PILOT_NAME,
@@ -166,35 +167,42 @@ def default_cursor_command_runner(
     cwd: str,
     timeout: int,
 ) -> ProcessResult:
+    """Run cursor-agent and always reap the child, including on timeout."""
     import time
 
     started = time.perf_counter()
+    proc = subprocess.Popen(
+        list(command),
+        cwd=cwd or None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+    )
+    timed_out = False
+    stdout = ""
+    stderr = ""
     try:
-        proc = subprocess.run(
-            list(command),
-            cwd=cwd or None,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        elapsed = int((time.perf_counter() - started) * 1000)
-        return ProcessResult(
-            returncode=None,
-            stdout=_as_text(exc.stdout),
-            stderr=_as_text(exc.stderr),
-            elapsed_ms=elapsed,
-            timed_out=True,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.wait()
     elapsed = int((time.perf_counter() - started) * 1000)
     return ProcessResult(
-        returncode=proc.returncode,
-        stdout=proc.stdout or "",
-        stderr=proc.stderr or "",
+        returncode=None if timed_out else proc.returncode,
+        stdout=stdout or "",
+        stderr=stderr or "",
         elapsed_ms=elapsed,
-        timed_out=False,
+        timed_out=timed_out,
     )
 
 
@@ -279,15 +287,27 @@ def run_cursor_preflight(
     user home or a project directory as cwd. `isolated-home` does not call
     `mcp disable`. `mcp-toggle` disables OverHaust in a throwaway directory
     and deletes only the project slug that command created.
+
+    The Cursor state files, including `mcp.json`, are snapshotted before any
+    CLI call and restored afterwards, including when a probe raises. The
+    `~/.cursor/projects` listing is snapshotted at the start, and slug
+    directories created by version, status, models, or mcp commands are
+    removed. Pre-existing slugs are not modified.
     """
     if isolation not in ISOLATIONS:
         raise PreflightError(
             f"Unknown isolation {isolation!r}. Use {ISOLATION_HOME!r} or {ISOLATION_MCP!r}."
         )
+    guard = CursorStateGuard(state_home)
+    slugs = ProjectSlugGuard(state_home)
+    guard.snapshot()
+    slugs.snapshot()
     scratch = Path(tempfile.mkdtemp(prefix="layer4-cursor-preflight-"))
+    restore: Dict[str, Any] = {}
+    slug_cleanup: Dict[str, Any] = {}
     try:
         _preflight_cwd(scratch, state_home)
-        return _preflight_report(
+        report = _preflight_report(
             binary=binary,
             env=env,
             isolation=isolation,
@@ -297,7 +317,39 @@ def run_cursor_preflight(
             scratch=scratch,
         )
     finally:
+        try:
+            slug_cleanup = slugs.cleanup()
+        except Exception as exc:
+            slug_cleanup = {"cleanup_verified": False, "detail": f"{type(exc).__name__}: {exc}"}
+        try:
+            restore = guard.restore()
+        except Exception as exc:
+            restore = {
+                "files_restored": False,
+                "model_keys_restored": False,
+                "mcp_json_byte_identical": False,
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
         shutil.rmtree(scratch, ignore_errors=True)
+    report["state_restore"] = restore
+    report["mcp_json_byte_identical"] = bool(restore.get("mcp_json_byte_identical"))
+    report["preflight_projects_cleanup"] = slug_cleanup
+    if not report["mcp_json_byte_identical"] or not restore.get("files_restored"):
+        report["selected_usable"] = False
+        report["detail"] = (
+            str(report.get("detail") or "")
+            + " Cursor state restore did not leave mcp.json and the CLI files byte-identical."
+        ).strip()
+    if not slug_cleanup.get("cleanup_verified"):
+        report["selected_usable"] = False
+    home_probe = report.get("isolated_home") or {}
+    if home_probe.get("wrote_real_projects_slug"):
+        home_probe = dict(home_probe)
+        home_probe["usable"] = False
+        report["isolated_home"] = home_probe
+        if isolation == ISOLATION_HOME:
+            report["selected_usable"] = False
+    return report
 
 
 def _preflight_report(
@@ -402,10 +454,24 @@ def _probe_isolated_home(runner, binary, env, state_home: Path) -> Dict[str, Any
         )
         child = dict(env)
         child["HOME"] = str(probe_home)
+        home_slugs = ProjectSlugGuard(state_home)
+        home_slugs.snapshot()
         listed = runner([binary, "mcp", "list"], child, str(probe_home), 20)
+        home_slugs.refresh()
         text = (listed.stdout or "") + (listed.stderr or "")
-        honors = sentinel in text and "overhaust" not in text.lower()
-        if honors:
+        leaked = list(dict.fromkeys(
+            list(home_slugs.created_slugs) + list(home_slugs.preexisting_touched)
+        ))
+        list_ok = sentinel in text and "overhaust" not in text.lower()
+        honors = list_ok and not leaked
+        if leaked:
+            detail = (
+                "cursor-agent wrote under the real ~/.cursor/projects while HOME "
+                "was a temp directory, so HOME is not honored. "
+                "New slug directories are removed. Pre-existing slugs are not modified. "
+                + ", ".join(leaked)
+            )
+        elif honors:
             detail = (
                 "cursor-agent mcp list under a temp HOME showed the sentinel "
                 "server and did not show overhaust. "
@@ -422,6 +488,8 @@ def _probe_isolated_home(runner, binary, env, state_home: Path) -> Dict[str, Any
             "usable": honors,
             "detail": detail,
             "exit_code": listed.returncode,
+            "wrote_real_projects_slug": bool(leaked),
+            "leaked_slugs": leaked,
         }
     finally:
         shutil.rmtree(probe_home, ignore_errors=True)
@@ -826,6 +894,14 @@ def _markdown(report: Dict[str, Any]) -> str:
         f"- Sessions recorded: {report.get('recorded_session_count')}",
         f"- Sessions dropped: {report.get('dropped_session_count')}",
         "",
+    ])
+    if report.get("stopped_early"):
+        lines.append(
+            f"- Stopped early at `{report.get('stopped_at_session')}`: "
+            f"{report.get('stop_reason')}"
+        )
+        lines.append("")
+    lines.extend([
         MEANS_POLICY,
         "",
         "## Planned execution order",
@@ -1064,6 +1140,11 @@ def _methodology() -> str:
     ])
 
 
+def _overhaust_mcp_stop(session: Layer4SessionResult) -> bool:
+    reasons = set(session.invalid_reasons or [])
+    return bool(reasons & {"overhaust_mcp_tool_called", "overhaust_mcp_tool_available"})
+
+
 def _mcp_cleanup_report(
     sessions: Sequence[Layer4SessionResult],
     isolation: str,
@@ -1158,6 +1239,7 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
         sessions: List[Layer4SessionResult] = []
         state_restore: Optional[Dict[str, Any]] = None
         mcp_cleanup: Optional[Dict[str, Any]] = None
+        stopped_at: Optional[str] = None
         reserved = allocate_cursor_result_paths(results_dir, config.stamp)
         used_stamp = str(reserved["stamp"])
 
@@ -1194,35 +1276,35 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
             try:
                 for plan in plans:
                     try:
-                        sessions.append(
-                            _execute_session(
-                                plan,
-                                by_id[plan.task_id],
-                                workspace,
-                                config,
-                                probe=probe,
-                                binary=binary,
-                                env=env,
-                                run_dir=run_dir,
-                                runner=runner,
-                                hook_command=hook_command,
-                                state_home=state_home,
-                                commit=commit,
-                            )
+                        session = _execute_session(
+                            plan,
+                            by_id[plan.task_id],
+                            workspace,
+                            config,
+                            probe=probe,
+                            binary=binary,
+                            env=env,
+                            run_dir=run_dir,
+                            runner=runner,
+                            hook_command=hook_command,
+                            state_home=state_home,
+                            commit=commit,
                         )
                     except Exception as exc:
-                        sessions.append(
-                            error_session(
-                                plan,
-                                snapshot_hash=workspace.snapshot_hash,
-                                probe=probe,
-                                message=f"{type(exc).__name__}: {exc}",
-                                started_at=_now(),
-                                finished_at=_now(),
-                                model_requested=model,
-                                isolation=config.isolation,
-                            )
+                        session = error_session(
+                            plan,
+                            snapshot_hash=workspace.snapshot_hash,
+                            probe=probe,
+                            message=f"{type(exc).__name__}: {exc}",
+                            started_at=_now(),
+                            finished_at=_now(),
+                            model_requested=model,
+                            isolation=config.isolation,
                         )
+                    sessions.append(session)
+                    if _overhaust_mcp_stop(session):
+                        stopped_at = session.session_id
+                        break
                 _persist_raw(sessions, results_dir, used_stamp)
             finally:
                 shutil.rmtree(run_dir, ignore_errors=True)
@@ -1309,6 +1391,15 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
             "preflight": preflight,
             "state_restore": state_restore,
             "mcp_cleanup": mcp_cleanup,
+            "stopped_early": stopped_at is not None,
+            "stopped_at_session": stopped_at,
+            "stop_reason": (
+                "OverHaust MCP tool was available or called. That session is "
+                "invalid and the run stopped before the next session. Neither "
+                "condition may have the OverHaust MCP."
+                if stopped_at is not None
+                else None
+            ),
             "output_dir": output_dir,
             "token_accounting_note": CURSOR_TOKEN_ACCOUNTING,
             "comparability": (
@@ -1329,3 +1420,7 @@ def run_cursor(config: Optional[CursorRunConfig] = None) -> Dict[str, Any]:
         return report
     finally:
         workspace.close()
+        try:
+            release_sqlite_resources()
+        except Exception:
+            pass

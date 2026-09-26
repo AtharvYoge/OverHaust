@@ -59,6 +59,7 @@ REWRITTEN_CURSOR_FILES = (
     "cli-config.json",
     "agent-cli-state.json",
     "statsig-cache.json",
+    "mcp.json",
 )
 MCP_DISABLED_FILE = "mcp-disabled.json"
 MCP_COMMANDS_NOTE = (
@@ -390,6 +391,7 @@ class CursorStateGuard:
             "model_keys": self._model_keys,
             "absent_model_keys": list(self._missing_keys),
             "files": {name: _file_sha256(self.cursor_dir / name) for name in REWRITTEN_CURSOR_FILES},
+            "mcp_json_sha256": _file_sha256(self.cursor_dir / "mcp.json"),
         }
 
     def restore(self) -> Dict[str, Any]:
@@ -410,9 +412,16 @@ class CursorStateGuard:
             )
             for name, blob in self._blobs.items()
         )
+        mcp_blob = self._blobs.get("mcp.json")
+        mcp_path = self.cursor_dir / "mcp.json"
+        if mcp_blob is None:
+            mcp_identical = not mcp_path.exists()
+        else:
+            mcp_identical = mcp_path.is_file() and mcp_path.read_bytes() == mcp_blob
         return {
             "model_keys_restored": keys_ok,
             "files_restored": files_ok,
+            "mcp_json_byte_identical": mcp_identical,
             "model_keys": after_keys,
             "absent_model_keys": after_missing,
         }
@@ -461,6 +470,94 @@ def _disabled_files(projects_root: Path) -> Dict[str, Optional[bytes]]:
     return found
 
 
+class ProjectSlugGuard:
+    """
+    Snapshot `~/.cursor/projects` and delete only slugs created afterward.
+
+    A directory that already existed is never modified, including when the
+    CLI writes `mcp-disabled.json` inside it.
+    """
+
+    def __init__(self, state_home: Path) -> None:
+        self.state_home = state_home
+        self.projects_root = state_home / ".cursor" / "projects"
+        self._before_names: set[str] = set()
+        self._before_disabled: Dict[str, Optional[bytes]] = {}
+        self._projects_existed = False
+        self._snapshotted = False
+        self.created_slugs: List[str] = []
+        self.preexisting_touched: List[str] = []
+
+    def snapshot(self) -> None:
+        self._projects_existed = (
+            self.projects_root.exists() and not self.projects_root.is_symlink()
+        )
+        self._before_disabled = _disabled_files(self.projects_root)
+        self._before_names = set(self._before_disabled)
+        self._snapshotted = True
+        self.created_slugs = []
+        self.preexisting_touched = []
+
+    def refresh(self) -> None:
+        if not self._snapshotted:
+            return
+        current = _disabled_files(self.projects_root)
+        self.created_slugs = sorted(set(current) - self._before_names)
+        touched: List[str] = []
+        for name, before in self._before_disabled.items():
+            after = current.get(name, before)
+            if after != before:
+                touched.append(name)
+        self.preexisting_touched = sorted(touched)
+
+    def cleanup(self) -> Dict[str, Any]:
+        if not self._snapshotted:
+            return {
+                "removed_slugs": [],
+                "created_slugs_remaining": [],
+                "refused_preexisting_slugs": [],
+                "created_slugs_removed": False,
+                "preexisting_dirs_preserved": False,
+                "cleanup_verified": False,
+                "detail": "no projects snapshot; refusing to delete anything",
+            }
+        self.refresh()
+        created = list(self.created_slugs)
+        removed: List[str] = []
+        root = self.projects_root.resolve() if self.projects_root.exists() else None
+        for slug in created:
+            if slug in self._before_names:
+                continue
+            path = self.projects_root / slug
+            if path.is_symlink() or not path.is_dir():
+                continue
+            if root is None:
+                continue
+            resolved = path.resolve()
+            if root != resolved and root not in resolved.parents:
+                continue
+            shutil.rmtree(path)
+            removed.append(slug)
+        if (
+            not self._projects_existed
+            and self.projects_root.is_dir()
+            and not self.projects_root.is_symlink()
+            and not any(self.projects_root.iterdir())
+        ):
+            self.projects_root.rmdir()
+        remaining = [slug for slug in created if (self.projects_root / slug).exists()]
+        preserved = all((self.projects_root / name).exists() for name in self._before_names)
+        created_gone = not remaining
+        return {
+            "removed_slugs": removed,
+            "created_slugs_remaining": remaining,
+            "refused_preexisting_slugs": list(self.preexisting_touched),
+            "created_slugs_removed": created_gone,
+            "preexisting_dirs_preserved": preserved,
+            "cleanup_verified": created_gone and preserved and not self.preexisting_touched,
+        }
+
+
 class WorkspaceMcpDisable:
     """
     Disable `overhaust` for one workspace cwd, then delete only new slugs.
@@ -486,36 +583,26 @@ class WorkspaceMcpDisable:
         self.binary = binary
         self.runner = runner
         self.env = env
-        self.projects_root = state_home / ".cursor" / "projects"
-        self._before_names: set[str] = set()
-        self._before_disabled: Dict[str, Optional[bytes]] = {}
-        self._projects_existed = False
-        self._snapshotted = False
-        self.created_slugs: List[str] = []
-        self.preexisting_touched: List[str] = []
+        self.slugs = ProjectSlugGuard(state_home)
+
+    @property
+    def created_slugs(self) -> List[str]:
+        return self.slugs.created_slugs
+
+    @property
+    def preexisting_touched(self) -> List[str]:
+        return self.slugs.preexisting_touched
 
     def snapshot(self) -> None:
         _reject_home_cwd(self.workspace, self.state_home)
-        self._projects_existed = (
-            self.projects_root.exists() and not self.projects_root.is_symlink()
-        )
-        self._before_disabled = _disabled_files(self.projects_root)
-        self._before_names = set(self._before_disabled)
-        self._snapshotted = True
+        self.slugs.snapshot()
 
     def _refresh_created(self) -> None:
-        current = _disabled_files(self.projects_root)
-        self.created_slugs = sorted(set(current) - self._before_names)
-        touched: List[str] = []
-        for name, before in self._before_disabled.items():
-            after = current.get(name, before)
-            if after != before:
-                touched.append(name)
-        self.preexisting_touched = sorted(touched)
+        self.slugs.refresh()
 
     def disable_and_verify(self) -> Dict[str, Any]:
         """One `mcp disable` and one `mcp list`, both with workspace cwd."""
-        if not self._snapshotted:
+        if not self.slugs._snapshotted:
             self.snapshot()
         _reject_home_cwd(self.workspace, self.state_home)
         disabled = self.runner(
@@ -551,57 +638,8 @@ class WorkspaceMcpDisable:
         }
 
     def cleanup(self) -> Dict[str, Any]:
-        """
-        Remove slug dirs created after the snapshot.
-
-        Pre-existing slug directories are left byte-for-byte alone, including
-        an `mcp-disabled.json` the CLI wrote into them.
-        """
-        if not self._snapshotted:
-            return {
-                "removed_slugs": [],
-                "created_slugs_remaining": [],
-                "refused_preexisting_slugs": [],
-                "created_slugs_removed": False,
-                "preexisting_dirs_preserved": False,
-                "cleanup_verified": False,
-                "detail": "no projects snapshot; refusing to delete anything",
-            }
-        self._refresh_created()
-        created = list(self.created_slugs)
-        removed: List[str] = []
-        root = self.projects_root.resolve() if self.projects_root.exists() else None
-        for slug in created:
-            if slug in self._before_names:
-                continue
-            path = self.projects_root / slug
-            if path.is_symlink() or not path.is_dir():
-                continue
-            if root is None:
-                continue
-            resolved = path.resolve()
-            if root != resolved and root not in resolved.parents:
-                continue
-            shutil.rmtree(path)
-            removed.append(slug)
-        if (
-            not self._projects_existed
-            and self.projects_root.is_dir()
-            and not self.projects_root.is_symlink()
-            and not any(self.projects_root.iterdir())
-        ):
-            self.projects_root.rmdir()
-        remaining = [slug for slug in created if (self.projects_root / slug).exists()]
-        preserved = all((self.projects_root / name).exists() for name in self._before_names)
-        created_gone = not remaining
-        return {
-            "removed_slugs": removed,
-            "created_slugs_remaining": remaining,
-            "refused_preexisting_slugs": list(self.preexisting_touched),
-            "created_slugs_removed": created_gone,
-            "preexisting_dirs_preserved": preserved,
-            "cleanup_verified": created_gone and preserved and not self.preexisting_touched,
-        }
+        """Remove slug dirs created after the snapshot. Pre-existing slugs stay."""
+        return self.slugs.cleanup()
 
 
 def _mentions_overhaust(text: str) -> bool:

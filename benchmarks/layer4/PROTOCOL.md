@@ -286,9 +286,20 @@ calls each command once. Cleanup does not call them again.
 Preflight (`--preflight`) checks the CLI, auth, whether the model is listed,
 and only the strategy named by `--isolation`. Every preflight command uses a
 throwaway directory as cwd. It does not use the user home or a project
-directory. The mcp-toggle probe disables OverHaust in its own throwaway
-workspace and deletes only the slug that command created. It does not pass
-`-p`.
+directory. Before any CLI call it snapshots `cli-config.json`,
+`agent-cli-state.json`, `statsig-cache.json`, `mcp.json`, and the
+`~/.cursor/projects` listing, and it restores those files and deletes slug
+directories created during the probe, including when a probe raises.
+Pre-existing slugs are not modified. After restore, `mcp.json` must be
+byte-identical; that check is in the preflight output. If the isolated-home
+probe's temp HOME is ignored and the CLI writes a slug under the real
+`~/.cursor/projects`, that slug is removed and isolated-home is unusable.
+The mcp-toggle probe disables OverHaust in its own throwaway workspace and
+deletes only the slug that command created. It does not pass `-p`.
+
+If an OverHaust MCP tool is available or called in either condition, that
+session is invalid and the run stops before the next session. The report is
+still written and the Cursor state files are restored.
 
 `--model` rewrites `~/.cursor/cli-config.json` keys `model`, `selectedModel`,
 `modelParameters`, `hasChangedDefaultModel`, and `modelSelectionHistory`.

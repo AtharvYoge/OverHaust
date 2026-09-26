@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import sqlite3
@@ -43,6 +44,18 @@ from benchmarks.layer4.schema import Layer4SessionResult
 from benchmarks.repro import capture_repository_snapshot
 from benchmarks.tasks_loader import load_task_set
 from packages.integrations.interception import CONTEXT_MARKER
+
+@pytest.fixture(autouse=True)
+def _finalize_native_resources_before_the_next_test():
+    """Close sqlite finalizers while the interpreter is still healthy.
+
+    A full-suite run on macOS can abort at shutdown with
+    `recursive_mutex lock failed` if sqlite or tokenizer objects are still
+    alive after another native library (faiss, torch) has been imported.
+    """
+    yield
+    gc.collect()
+
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SUCCESS = (FIXTURES / "cursor_stream_success.jsonl").read_text(encoding="utf-8")
@@ -95,10 +108,12 @@ def _write_store(home: Path, session_id: str, text: str) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "meta.json").write_text("{}\n", encoding="utf-8")
     connection = sqlite3.connect(directory / "store.db")
-    connection.execute("CREATE TABLE blobs (data TEXT)")
-    connection.execute("INSERT INTO blobs (data) VALUES (?)", (text,))
-    connection.commit()
-    connection.close()
+    try:
+        connection.execute("CREATE TABLE blobs (data TEXT)")
+        connection.execute("INSERT INTO blobs (data) VALUES (?)", (text,))
+        connection.commit()
+    finally:
+        connection.close()
 
 
 class FakeCursor:
@@ -112,6 +127,7 @@ class FakeCursor:
         projects_state: Path | None = None,
         disable_mode: str = "new-slug",
         model_failure: str | None = None,
+        store_extra: str | None = None,
     ):
         self.stream = stream
         self.timeout = timeout
@@ -120,6 +136,7 @@ class FakeCursor:
         self.projects_state = projects_state
         self.disable_mode = disable_mode
         self.model_failure = model_failure
+        self.store_extra = store_extra
         self.calls: list[list[str]] = []
         self.cwds: list[str] = []
         self.launches: list[dict] = []
@@ -188,9 +205,12 @@ class FakeCursor:
         if env.get("HOME"):
             marker = CONTEXT_MARKER + "\n\nrelevant files"
             if prompt_file:
-                _write_store(Path(env["HOME"]), "sess-1", marker)
+                body = marker
             else:
-                _write_store(Path(env["HOME"]), "sess-1", "baseline session has no overhaust marker")
+                body = "baseline session has no overhaust marker"
+            if self.store_extra:
+                body = body + "\n" + self.store_extra
+            _write_store(Path(env["HOME"]), "sess-1", body)
         (root / "notes.txt").write_text("agent wrote this\n", encoding="utf-8")
         if self.timeout:
             return ProcessResult(None, "", "timed out", timeout * 1000, True)
@@ -370,13 +390,15 @@ def test_store_marker_and_unreadable_store(tmp_path: Path):
     catalog = home / ".cursor" / "chats" / "hash" / "sess-2"
     catalog.mkdir(parents=True)
     connection = sqlite3.connect(catalog / "store.db")
-    connection.execute("CREATE TABLE blobs (data TEXT)")
-    connection.execute(
-        "INSERT INTO blobs (data) VALUES (?)",
-        (CONTEXT_MARKER + '\n{"name": "get_relevant_context", "server": "overhaust"}',),
-    )
-    connection.commit()
-    connection.close()
+    try:
+        connection.execute("CREATE TABLE blobs (data TEXT)")
+        connection.execute(
+            "INSERT INTO blobs (data) VALUES (?)",
+            (CONTEXT_MARKER + '\n{"name": "get_relevant_context", "server": "overhaust"}',),
+        )
+        connection.commit()
+    finally:
+        connection.close()
     tools = inspect_session_store([home], "sess-2")
     assert "get_relevant_context" in tools.overhaust_tools
     assert "server:overhaust" in tools.overhaust_tools
@@ -462,20 +484,70 @@ def test_condition_separation_and_cli_config_restore(tmp_path: Path):
     assert Path(report["_output_paths"]["json"]).name.startswith("layer4-cursor-")
 
 
-def test_mcp_violation_marks_the_session_invalid_and_keeps_it(tmp_path: Path):
+def test_mcp_violation_marks_the_session_invalid_and_stops_the_run(tmp_path: Path):
     stream = SUCCESS.replace(
         '"grepToolCall":{"args":{"pattern":"generateKOT","path":"src"}}',
         '"mcpToolCall":{"args":{"server":"overhaust","toolName":"get_relevant_context","name":"get_relevant_context"}}',
     )
-    fake = FakeCursor(stream=stream)
-    report = run_cursor(_config(tmp_path, fake, conditions=["overhaust"]))
-    assert report["recorded_session_count"] == 5
-    assert report["dropped_session_count"] == 0
-    for session in report["sessions"]:
+    for condition in ("baseline", "overhaust"):
+        state = tmp_path / "userhome"
+        fake = FakeCursor(stream=stream, mutate_home=state)
+        report = run_cursor(_config(
+            tmp_path,
+            fake,
+            state_home=state,
+            conditions=[condition],
+            stamp=f"mcp-stop-{condition}",
+            results_dir=tmp_path / f"results-{condition}",
+        ))
+        assert report["planned_session_count"] == 5
+        assert report["recorded_session_count"] == 1
+        assert report["dropped_session_count"] == 4
+        assert len(fake.launches) == 1
+        assert report["stopped_early"] is True
+        assert report["stopped_at_session"] == report["sessions"][0]["session_id"]
+        assert "Neither condition may have the OverHaust MCP" in report["stop_reason"]
+        session = report["sessions"][0]
+        assert session["condition"] == condition
         assert session["outcome"] == "invalid"
         assert session["valid"] is False
         assert "overhaust_mcp_tool_called" in session["invalid_reasons"]
         assert session["agent_input_tokens"]["value"] == 451
+        assert Path(report["_output_paths"]["json"]).is_file()
+        restored = json.loads((state / ".cursor" / "cli-config.json").read_text(encoding="utf-8"))
+        assert restored["model"] == "user-default"
+        assert report["state_restore"]["files_restored"] is True
+        assert report["state_restore"]["mcp_json_byte_identical"] is True
+        md = Path(report["_output_paths"]["md"]).read_text(encoding="utf-8")
+        assert "Stopped early" in md
+
+
+def test_mcp_catalog_marks_the_session_invalid_and_stops_the_run(tmp_path: Path):
+    catalog = '{"name": "get_relevant_context", "serverName": "overhaust"}'
+    for condition in ("baseline", "overhaust"):
+        state = tmp_path / "userhome"
+        fake = FakeCursor(store_extra=catalog, mutate_home=state)
+        report = run_cursor(_config(
+            tmp_path,
+            fake,
+            state_home=state,
+            conditions=[condition],
+            stamp=f"mcp-catalog-{condition}",
+            results_dir=tmp_path / f"catalog-{condition}",
+        ))
+        assert report["recorded_session_count"] == 1
+        assert report["dropped_session_count"] == 4
+        assert len(fake.launches) == 1
+        assert report["stopped_early"] is True
+        session = report["sessions"][0]
+        assert session["condition"] == condition
+        assert session["valid"] is False
+        assert "overhaust_mcp_tool_available" in session["invalid_reasons"]
+        assert "overhaust_mcp_tool_called" not in session["invalid_reasons"]
+        assert Path(report["_output_paths"]["json"]).is_file()
+        assert report["state_restore"]["mcp_json_byte_identical"] is True
+        restored = json.loads((state / ".cursor" / "cli-config.json").read_text(encoding="utf-8"))
+        assert restored["model"] == "user-default"
 
 
 def test_timeout_and_failed_sessions_stay_in_the_dataset(tmp_path: Path):
@@ -761,6 +833,26 @@ def test_cli_dry_run_and_preflight_flags(tmp_path: Path, monkeypatch, capsys):
     code = main(["--preflight", "--dry-run", "--results-dir", str(tmp_path / "nope")])
     assert code == 2
 
+    def stopped_run(_config):
+        return {
+            "mode": "pilot",
+            "recorded_session_count": 1,
+            "dropped_session_count": 9,
+            "stopped_early": True,
+            "stop_reason": "OverHaust MCP tool was available or called.",
+            "state_restore": {"model_keys_restored": True, "files_restored": True},
+            "_output_paths": {"json": "report.json", "md": "report.md"},
+        }
+
+    monkeypatch.setattr("benchmarks.layer4.cursor_runner.run_cursor", stopped_run)
+    code = main([
+        "--agent", "cursor",
+        "--results-dir", str(tmp_path / "stopped"),
+        "--cursor-bin", "cursor-agent",
+    ])
+    assert code == 2
+    assert "OverHaust MCP tool was available or called." in capsys.readouterr().err
+
 
 def _assert_cwd_is_throwaway(fake: FakeCursor, state: Path) -> None:
     forbidden = {state.resolve(), Path.home().resolve()}
@@ -931,6 +1023,136 @@ def test_mcp_toggle_cleans_up_when_the_model_command_fails(tmp_path: Path):
     assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
     assert not (kept / "mcp-disabled.json").exists()
     assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+
+
+def _mutate_cursor_state(state: Path, command) -> None:
+    argv = [str(part) for part in command]
+    cursor = state / ".cursor"
+    cursor.mkdir(parents=True, exist_ok=True)
+    config = cursor / "cli-config.json"
+    data = json.loads(config.read_text(encoding="utf-8")) if config.is_file() else {}
+    data["model"] = "mutated-by-" + (argv[1] if len(argv) > 1 else "cmd")
+    config.write_text(json.dumps(data), encoding="utf-8")
+    (cursor / "agent-cli-state.json").write_text('{"mutated": true}', encoding="utf-8")
+    (cursor / "statsig-cache.json").write_text('{"mutated": true}', encoding="utf-8")
+    (cursor / "mcp.json").write_text('{"mcpServers": {"mutated": {}}}', encoding="utf-8")
+    if any(part in argv for part in ("--version", "status", "models", "mcp")):
+        projects = cursor / "projects"
+        projects.mkdir(parents=True, exist_ok=True)
+        slug = projects / ("slug-" + hashlib.sha256(" ".join(argv).encode()).hexdigest()[:8])
+        slug.mkdir(exist_ok=True)
+        (slug / "mcp-disabled.json").write_text('["overhaust"]\n', encoding="utf-8")
+
+
+def test_preflight_restores_cursor_state_and_new_slugs(tmp_path: Path):
+    state = tmp_path / "userhome"
+    cursor = state / ".cursor"
+    cursor.mkdir(parents=True)
+    original_mcp = '{"mcpServers": {"gmail": {}}}\n'
+    (cursor / "cli-config.json").write_text(
+        json.dumps({"model": "user-default", "selectedModel": "user-default"}),
+        encoding="utf-8",
+    )
+    (cursor / "agent-cli-state.json").write_text('{"ok": true}', encoding="utf-8")
+    (cursor / "statsig-cache.json").write_text('{"ok": true}', encoding="utf-8")
+    (cursor / "mcp.json").write_text(original_mcp, encoding="utf-8")
+    kept = cursor / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+
+    def runner(command, env, cwd, timeout):
+        argv = [str(part) for part in command]
+        assert Path(cwd).resolve() != state.resolve()
+        assert Path(cwd).resolve() != Path.home().resolve()
+        _mutate_cursor_state(state, command)
+        if "--version" in argv:
+            return ProcessResult(0, "2026.09.26-dd393fe\n", "", 1, False)
+        if "models" in argv:
+            return ProcessResult(0, "gpt-5.5-medium\n", "", 1, False)
+        if "mcp" in argv and "list" in argv:
+            return ProcessResult(0, "layer4-home-sentinel\n", "", 1, False)
+        return ProcessResult(0, "", "", 1, False)
+
+    report = run_cursor_preflight(
+        binary="cursor-agent",
+        env={"CURSOR_API_KEY": "test-cursor-key"},
+        isolation="isolated-home",
+        model="gpt-5.5-medium",
+        state_home=state,
+        runner=runner,
+    )
+    assert report["mcp_json_byte_identical"] is True
+    assert report["state_restore"]["files_restored"] is True
+    assert report["state_restore"]["mcp_json_byte_identical"] is True
+    assert (cursor / "mcp.json").read_text(encoding="utf-8") == original_mcp
+    assert json.loads((cursor / "cli-config.json").read_text(encoding="utf-8"))["model"] == "user-default"
+    assert json.loads((cursor / "agent-cli-state.json").read_text(encoding="utf-8")) == {"ok": True}
+    projects = cursor / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert report["preflight_projects_cleanup"]["cleanup_verified"] is True
+    assert not any(call for call in report["preflight_projects_cleanup"]["removed_slugs"] if call == "user-project")
+
+    def boom(command, env, cwd, timeout):
+        _mutate_cursor_state(state, command)
+        argv = [str(part) for part in command]
+        if "--version" in argv:
+            return ProcessResult(0, "2026.09.26-dd393fe\n", "", 1, False)
+        raise RuntimeError("models exploded")
+
+    with pytest.raises(RuntimeError, match="models exploded"):
+        run_cursor_preflight(
+            binary="cursor-agent",
+            env={"CURSOR_API_KEY": "test-cursor-key"},
+            isolation="isolated-home",
+            model="gpt-5.5-medium",
+            state_home=state,
+            runner=boom,
+        )
+    assert (cursor / "mcp.json").read_text(encoding="utf-8") == original_mcp
+    assert json.loads((cursor / "cli-config.json").read_text(encoding="utf-8"))["model"] == "user-default"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+
+
+def test_isolated_home_preflight_treats_a_real_projects_slug_as_not_honoring_home(tmp_path: Path):
+    state = tmp_path / "userhome"
+    cursor = state / ".cursor"
+    cursor.mkdir(parents=True)
+    (cursor / "mcp.json").write_text("{}\n", encoding="utf-8")
+    kept = cursor / "projects" / "user-project"
+    kept.mkdir(parents=True)
+    (kept / "keep.txt").write_text("leave-me\n", encoding="utf-8")
+
+    def ignores_home(command, env, cwd, timeout):
+        argv = [str(part) for part in command]
+        if "--version" in argv:
+            return ProcessResult(0, "2026.09.26-dd393fe\n", "", 1, False)
+        if "models" in argv:
+            return ProcessResult(0, "gpt-5.5-medium\n", "", 1, False)
+        if "mcp" in argv and "list" in argv:
+            leaked = cursor / "projects" / "ignored-home"
+            leaked.mkdir(parents=True, exist_ok=True)
+            (leaked / "mcp-disabled.json").write_text("[]\n", encoding="utf-8")
+            return ProcessResult(0, "layer4-home-sentinel\n", "", 1, False)
+        return ProcessResult(0, "", "", 1, False)
+
+    report = run_cursor_preflight(
+        binary="cursor-agent",
+        env={"CURSOR_API_KEY": "test-cursor-key"},
+        isolation="isolated-home",
+        model="gpt-5.5-medium",
+        state_home=state,
+        runner=ignores_home,
+    )
+    assert report["isolated_home"]["usable"] is False
+    assert report["isolated_home"]["wrote_real_projects_slug"] is True
+    assert report["selected_usable"] is False
+    assert report["mcp_json_byte_identical"] is True
+    projects = cursor / "projects"
+    assert sorted(path.name for path in projects.iterdir()) == ["user-project"]
+    assert (kept / "keep.txt").read_text(encoding="utf-8") == "leave-me\n"
+    assert not (projects / "ignored-home").exists()
 
 
 def test_preset_help_states_cursor_pilot_is_ten_sessions():

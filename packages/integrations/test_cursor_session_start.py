@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import subprocess
@@ -27,6 +28,12 @@ ROOT = Path(__file__).resolve().parents[2]
 HOOK_SCRIPT = ROOT / "scripts" / "integrations" / "overhaust_cursor_session_start_hook.py"
 
 
+@pytest.fixture(autouse=True)
+def _finalize_sqlite_before_the_next_test():
+    yield
+    gc.collect()
+
+
 @pytest.fixture
 def indexed_project(monkeypatch):
     tmpdir = tempfile.mkdtemp()
@@ -41,8 +48,33 @@ def indexed_project(monkeypatch):
     monkeypatch.delenv(PROMPT_FILE_ENV, raising=False)
     monkeypatch.delenv(SESSION_ID_ENV, raising=False)
     yield store, root, db.name
+    del store
+    gc.collect()
     if os.path.exists(db.name):
         os.unlink(db.name)
+
+
+def _run_hook(args, *, input_text: str, env: dict, timeout: int):
+    """Spawn the hook and always reap it. posix_spawn stays available (no setsid)."""
+    proc = subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(input_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    return proc.returncode, stdout, stderr
 
 
 def _stdin(root: Path, session_id: str = "cursor-sess") -> str:
@@ -193,30 +225,24 @@ def test_hook_script_uses_the_production_seam_and_fails_open(indexed_project, tm
     env[PROMPT_FILE_ENV] = str(prompt_path)
     env[SESSION_ID_ENV] = "task-overhaust-r0"
     env["OVERHAUST_INTEGRATION_DEBUG_FILE"] = str(debug_path)
-    proc = subprocess.run(
+    code, stdout, _stderr = _run_hook(
         [sys.executable, str(HOOK_SCRIPT)],
-        input=_stdin(root),
-        text=True,
-        capture_output=True,
+        input_text=_stdin(root),
         env=env,
         timeout=60,
-        check=False,
     )
-    assert proc.returncode == 0
-    payload = json.loads(proc.stdout)
+    assert code == 0
+    payload = json.loads(stdout)
     assert CONTEXT_MARKER in payload["additional_context"]
     debug = json.loads(debug_path.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert debug["fired"] is True
     assert "Where is the KOT generated?" not in debug_path.read_text(encoding="utf-8")
 
-    broken = subprocess.run(
+    broken_code, broken_stdout, _broken_err = _run_hook(
         [sys.executable, str(HOOK_SCRIPT)],
-        input="not-json",
-        text=True,
-        capture_output=True,
+        input_text="not-json",
         env=env,
         timeout=30,
-        check=False,
     )
-    assert broken.returncode == 0
-    assert json.loads(broken.stdout) == {}
+    assert broken_code == 0
+    assert json.loads(broken_stdout) == {}

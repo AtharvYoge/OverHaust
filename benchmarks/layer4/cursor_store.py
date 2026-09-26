@@ -10,11 +10,12 @@ stays hook-log-only and is recorded that way.
 
 from __future__ import annotations
 
+import atexit
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Set
 
 from benchmarks.layer4.cursor_parse import OVERHAUST_MCP_TOOL_NAMES
 from packages.integrations.interception import CONTEXT_MARKER
@@ -74,9 +75,44 @@ def _session_dirs(chats_root: Path, session_id: str) -> List[Path]:
     return matches
 
 
+# Connections closed during interpreter shutdown can abort on macOS
+# (libc++ recursive_mutex) once another native library is loaded. Track
+# every connection this module opens and close it before process exit.
+_LIVE_CONNECTIONS: Set[sqlite3.Connection] = set()
+
+
+def _close_connection(connection: sqlite3.Connection) -> None:
+    _LIVE_CONNECTIONS.discard(connection)
+    try:
+        connection.close()
+    except sqlite3.Error:
+        pass
+
+
+def release_sqlite_resources() -> None:
+    """Close connections this module still has open.
+
+    macOS aborts at interpreter shutdown with
+    `recursive_mutex lock failed` if a sqlite finalizer runs after another
+    native library has destroyed libc++ mutexes. Close while the interpreter
+    is still up. Cyclic garbage is collected first so a connection kept alive
+    only by a cycle is not left for Py_Finalize.
+    """
+    import gc
+
+    gc.collect()
+    for connection in list(_LIVE_CONNECTIONS):
+        _close_connection(connection)
+
+
+atexit.register(release_sqlite_resources)
+
+
 def _read_sqlite_text(path: Path) -> str:
     uri = path.resolve().as_posix().replace("?", "%3F")
-    connection = sqlite3.connect(f"file:{uri}?mode=ro", uri=True)
+    # cache=private avoids a process-wide shared cache that outlives the connection.
+    connection = sqlite3.connect(f"file:{uri}?mode=ro&cache=private", uri=True)
+    _LIVE_CONNECTIONS.add(connection)
     try:
         try:
             connection.execute("PRAGMA query_only=ON")
@@ -104,7 +140,7 @@ def _read_sqlite_text(path: Path) -> str:
             raise sqlite3.DatabaseError("no tables")
         return "\n".join(chunks)
     finally:
-        connection.close()
+        _close_connection(connection)
 
 
 def overhaust_tools_in_text(text: str) -> List[str]:

@@ -24,6 +24,28 @@ from packages.integrations.cursor_session_start import (  # noqa: E402
 )
 
 
+def _release_before_exit() -> None:
+    """Close sqlite and drop cyclic native objects before C++ shutdown.
+
+    On macOS, leaving those finalizers until interpreter teardown can abort
+    with `recursive_mutex lock failed` once another native library is loaded.
+    """
+    import gc
+    import sqlite3
+
+    def _close_open_connections() -> None:
+        for obj in gc.get_objects():
+            if isinstance(obj, sqlite3.Connection):
+                try:
+                    obj.close()
+                except sqlite3.Error:
+                    pass
+
+    _close_open_connections()
+    gc.collect()
+    _close_open_connections()
+
+
 def main() -> int:
     raw = sys.stdin.read()
     try:
@@ -39,6 +61,8 @@ def main() -> int:
         sys.stdout.write("{}\n")
         sys.stdout.flush()
         return 0
+    finally:
+        _release_before_exit()
 
 
 if __name__ == "__main__":
