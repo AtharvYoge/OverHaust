@@ -1,7 +1,7 @@
 """
 Session matrix for Layer 4.
 
-Presets:
+Presets, when both conditions are selected (the default):
 
 - ``pilot`` (default): two Layer 3 tasks × both conditions × two repetitions
   = 8 sessions.
@@ -12,13 +12,18 @@ Ordering is pair counterbalancing, not a global shuffle of sessions. Each
 ``(task, rep)`` is one pair. Both sessions of a pair run adjacently. Within a
 task, the within-pair condition order is balanced across reps. Pair units are
 shuffled with ``random.Random(seed)``.
+
+A single condition does not reshuffle. The full pair plan is built with the
+same generator calls, then filtered. The kept sessions stay in that plan's
+relative order. ``original_pair_id`` and ``original_planned_position`` record
+the counterbalanced slot they came from.
 """
 
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from dataclasses import dataclass, replace
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from benchmarks.schemas import BenchmarkTask
 
@@ -60,9 +65,13 @@ class SessionPlan:
     pair_id: str
     order_in_pair: int
     condition_order: str
+    # Set only when this session was filtered out of the two-condition plan.
+    # Default plans leave both unset so their dicts stay the same.
+    original_pair_id: Optional[str] = None
+    original_planned_position: Optional[int] = None
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        data: Dict[str, object] = {
             "session_id": self.session_id,
             "task_id": self.task_id,
             "condition": self.condition,
@@ -75,6 +84,11 @@ class SessionPlan:
             "order_in_pair": self.order_in_pair,
             "condition_order": self.condition_order,
         }
+        if self.original_pair_id is not None:
+            data["original_pair_id"] = self.original_pair_id
+        if self.original_planned_position is not None:
+            data["original_planned_position"] = self.original_planned_position
+        return data
 
 
 def _balanced_condition_orders(reps: int, rng: random.Random) -> List[str]:
@@ -98,10 +112,45 @@ def _balanced_condition_orders(reps: int, rng: random.Random) -> List[str]:
     return orders
 
 
+def normalize_conditions(conditions: Sequence[str] | str | None = None) -> Tuple[str, ...]:
+    """
+    Canonical condition list.
+
+    ``None`` is both conditions, in ``baseline`` then ``overhaust`` order.
+    A subset keeps that same canonical order. The pair plan itself is not
+    reordered to match the order names were passed in.
+    """
+    if conditions is None:
+        return PILOT_CONDITIONS
+    if isinstance(conditions, str):
+        raw_items: List[str] = [conditions]
+    else:
+        raw_items = list(conditions)
+    names: List[str] = []
+    for item in raw_items:
+        if not isinstance(item, str):
+            raise ValueError(f"unknown condition: {item!r}")
+        for part in item.split(","):
+            name = part.strip().lower()
+            if name:
+                names.append(name)
+    if not names:
+        raise ValueError("at least one condition is required")
+    unknown = [name for name in names if name not in PILOT_CONDITIONS]
+    if unknown:
+        raise ValueError(
+            f"unknown condition: {unknown[0]!r}. "
+            "Expected baseline and/or overhaust."
+        )
+    if len(names) != len(set(names)):
+        raise ValueError("conditions must not contain duplicates")
+    return tuple(name for name in PILOT_CONDITIONS if name in set(names))
+
+
 def plan_matrix(
     tasks: Sequence[BenchmarkTask],
     *,
-    conditions: Sequence[str] = PILOT_CONDITIONS,
+    conditions: Sequence[str] | str | None = None,
     reps: int = PILOT_REPS,
     seed: int = PILOT_SEED,
 ) -> List[SessionPlan]:
@@ -116,12 +165,39 @@ def plan_matrix(
     a pair are emitted back-to-back. ``execution_order`` is that sequence.
     ``order_in_pair`` is 1 then 2. ``condition_order`` is
     ``baseline->overhaust`` or ``overhaust->baseline``.
+
+    ``conditions`` defaults to both. One condition builds that same pair plan
+    (same seed, same RNG calls) and then keeps only the requested sessions,
+    in their original relative order. ``execution_order`` is then the index
+    in the filtered run. ``original_pair_id`` and ``original_planned_position``
+    keep the pair id and the two-condition ``execution_order``.
     """
+    selected = normalize_conditions(conditions)
     if reps < 1:
         raise ValueError("reps must be >= 1")
-    if set(conditions) != set(PILOT_CONDITIONS) or len(tuple(conditions)) != 2:
-        raise ValueError("pair counterbalancing requires baseline and overhaust")
 
+    plans = _plan_counterbalanced_pairs(tasks, reps=reps, seed=seed)
+    if selected == PILOT_CONDITIONS:
+        return plans
+    kept = [plan for plan in plans if plan.condition in selected]
+    return [
+        replace(
+            plan,
+            execution_order=index,
+            original_pair_id=plan.pair_id,
+            original_planned_position=plan.execution_order,
+        )
+        for index, plan in enumerate(kept)
+    ]
+
+
+def _plan_counterbalanced_pairs(
+    tasks: Sequence[BenchmarkTask],
+    *,
+    reps: int,
+    seed: int,
+) -> List[SessionPlan]:
+    """Both conditions, pair counterbalancing. RNG order is part of the contract."""
     rng = random.Random(seed)
     pair_units: List[Tuple[BenchmarkTask, int, str]] = []
     for task in tasks:

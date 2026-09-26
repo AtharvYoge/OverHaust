@@ -35,6 +35,19 @@ python3 -m benchmarks.layer4.pilot --dry-run
 python3 -m benchmarks.layer4.pilot --preset full --dry-run
 ```
 
+The same full plan, baseline sessions only (10 sessions for seed 1). Fixture,
+prompts, scoring, tool configuration, seed, and timeout match the 20-session
+run. The hook stays absent on baseline.
+
+```bash
+python3 -m benchmarks.layer4.pilot --dry-run --preset full --conditions baseline --model gpt-4o
+```
+
+`--conditions` defaults to both `baseline` and `overhaust`. One condition
+keeps that condition's sessions from the pair-counterbalanced plan, in the
+same relative order. The report records each kept session's original pair id
+and its original planned position.
+
 The pilot matrix is `sym_generate_kot` and `arch_kitchen_hardware` ×
 `baseline` / `overhaust` × 2 reps. The full matrix uses every task in
 `benchmarks/tasks/initial`.

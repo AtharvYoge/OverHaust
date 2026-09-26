@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from benchmarks.layer4.matrix import FULL_NAME, PILOT_NAME, PILOT_SEED
+from benchmarks.layer4.matrix import FULL_NAME, PILOT_CONDITIONS, PILOT_NAME, PILOT_SEED
 from benchmarks.layer4.runner import PreflightError, RunConfig, run_pilot
 
 
@@ -37,6 +37,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Model passed to every session as `codex exec --model`. "
             "Required for a comparable run. Defaults to LAYER4_CODEX_MODEL."
+        ),
+    )
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        default=None,
+        metavar="CONDITION",
+        help=(
+            "Conditions to run. Default is both baseline and overhaust "
+            f"({', '.join(PILOT_CONDITIONS)}). "
+            "Pass one name to run only that condition, for example "
+            "--conditions baseline. A single condition uses the same "
+            "pair-counterbalanced plan, seed, fixture, prompts, and timeout, "
+            "and keeps that condition's sessions in their original relative order."
         ),
     )
     parser.add_argument("--seed", type=int, default=PILOT_SEED)
@@ -69,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         codex_bin=args.codex_bin,
         preset=args.preset,
+        conditions=args.conditions,
     )
     try:
         report = run_pilot(config)
@@ -93,8 +108,15 @@ def main(argv: list[str] | None = None) -> int:
         f"outcomes={summary.get('outcomes')}"
     )
     if not report.get("model_pinned"):
-        print(
-            "Model was not pinned. Pass --model so both conditions use the same model.",
-            file=sys.stderr,
-        )
+        conditions = report.get("conditions") or []
+        if len(conditions) == 1:
+            print(
+                "Model was not pinned. Pass --model so this condition uses a pinned model.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Model was not pinned. Pass --model so both conditions use the same model.",
+                file=sys.stderr,
+            )
     return 0
